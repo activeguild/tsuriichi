@@ -2,6 +2,7 @@ export type Slot = 'rod' | 'reel' | 'line' | 'lure' | 'charm';
 export type ItemRarity = 'normal' | 'magic' | 'rare' | 'legendary';
 export type StatKey =
   | 'power'
+  | 'crit'
   | 'lineStrength'
   | 'luck'
   | 'biteSpeed'
@@ -21,7 +22,8 @@ export const SLOT_LABEL: Record<Slot, string> = {
 };
 
 export const STAT_INFO: Record<StatKey, { label: string; unit: string; desc: string }> = {
-  power: { label: 'パワー', unit: '', desc: '巻き取り速度が上がる' },
+  power: { label: 'パワー', unit: '', desc: '巻き取り1ヒットのダメージが上がる' },
+  crit: { label: '会心率', unit: '%', desc: '会心ヒット（ダメージ2倍）が出やすい' },
   lineStrength: { label: 'ライン強度', unit: '', desc: 'テンションが上がりにくい' },
   luck: { label: '幸運', unit: '%', desc: 'ドロップ装備のレア度が上がる' },
   biteSpeed: { label: 'アタリ速度', unit: '%', desc: '魚が早く食いつく' },
@@ -33,6 +35,7 @@ export const STAT_INFO: Record<StatKey, { label: string; unit: string; desc: str
 
 export const BASE_STATS: Record<StatKey, number> = {
   power: 10,
+  crit: 5,
   lineStrength: 10,
   luck: 0,
   biteSpeed: 0,
@@ -81,6 +84,7 @@ export interface AffixDef {
 
 export const AFFIXES: AffixDef[] = [
   { id: 'pow', stat: 'power', kind: 'prefix', names: ['力強い', '剛力の', '豪腕の', '怪力の', '巨神の'], min: 2, max: 4, perTier: 3 },
+  { id: 'crit', stat: 'crit', kind: 'prefix', names: ['鋭い', '会心の', '必殺の', '一撃の', '神撃の'], min: 2, max: 4, perTier: 2 },
   { id: 'str', stat: 'lineStrength', kind: 'prefix', names: ['丈夫な', '頑強な', '鋼の', '金剛の', '不壊の'], min: 2, max: 4, perTier: 3 },
   { id: 'bite', stat: 'biteSpeed', kind: 'prefix', names: ['誘う', '魅惑の', '妖艶な', '魔性の', '天女の'], min: 3, max: 6, perTier: 3, slots: ['lure', 'line', 'charm', 'rod'] },
   { id: 'hook', stat: 'hookWindow', kind: 'prefix', names: ['機敏な', '俊敏な', '疾風の', '迅雷の', '神速の'], min: 5, max: 10, perTier: 5 },
