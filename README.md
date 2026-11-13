@@ -19,10 +19,23 @@ npm install
 npm run dev
 ```
 
+- 好きな場所から試すときは `?at=緯度,経度`（例: `?at=35.6084,139.6990`）
 - PCや位置情報なしで試すときは `?sim` を付ける（例: `http://localhost:5173/?sim`）。十字キー／矢印キーで移動、スポットの「ワープ」でテスト移動
 - スマホ実機でGPSを使うには **HTTPS** が必要（GitHub Pagesなど）。`main` へのpushで `.github/workflows/deploy.yml` がPagesにデプロイする（リポジトリ設定 → Pages → Source を「GitHub Actions」に）
 
-## 3D魚モデルの差し替え
+## 3D魚モデル
+
+海の魚（シーバス・マダイ・ブリ・アジなど20種）は **Fish Kit**（写真から作った3Dモデルと動き、CC0 1.0）を使っている。
+
+- 本体: `src/vendor/fish-kit/fish-kit.js`（three.js r187 用。README・LICENSE も同じ場所）
+- モデルと頭の写真: `public/fish-kit/`
+- 魚種とキットの対応は `src/data/fish.ts` の `kitId`（イサキは28cm未満なら幼魚モデル `young`）
+- 釣りの段階に合わせて動きを切り替える: 寄ってくる `turn` → 食いつき `bite` → ファイト `hooked`（終盤は `tired`）→ 抜き上げ `air`
+- 釣り糸は `getMouth()` で魚の口につながる
+
+川・湖・池の魚と、キットにない魚（カジキ等）は手続き生成モデル。
+
+### 自前の GLB/GLTF に差し替える
 
 `public/models/fish/` に GLB/GLTF を置き、`public/models/fish/manifest.json` に登録すると、その魚種は手続き生成モデルの代わりに表示される（コード変更不要）。
 
@@ -39,6 +52,7 @@ npm run dev
 - サイズは自動で正規化され、釣れた魚の体長に合わせて拡大縮小される
 - アニメーションがあれば再生（`animation` で名前指定、省略時は最初のクリップ）
 - 魚種IDの一覧は `src/data/fish.ts`
+- 優先順位: manifest の GLB/GLTF → Fish Kit → 手続き生成
 
 ## 構成
 
@@ -49,5 +63,6 @@ npm run dev
 | `src/data/fish.ts` / `src/data/gear.ts` | 魚種・装備・アフィックスのデータ |
 | `src/state.ts` | セーブ（localStorage）・ステータス計算 |
 | `src/fishing/FishingView.ts` | 3D釣りシーンとファイトのミニゲーム |
-| `src/fishing/fishModels.ts` | 魚モデル読み込み（GLB / 手続き生成） |
+| `src/fishing/fishModels.ts` | 魚モデル読み込み（GLB / Fish Kit / 手続き生成） |
+| `src/vendor/fish-kit/` | Fish Kit 本体（CC0） |
 | `src/ui/*` | 地図・装備・図鑑の画面 |

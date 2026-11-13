@@ -3,7 +3,7 @@ import type { Spot } from '../geo';
 import type { CaughtFish, Stats } from '../loot';
 import { isNight } from '../loot';
 import { BIOME_LABEL, FISH_BY_ID } from '../data/fish';
-import { createFish, FishObject, worldLength } from './fishModels';
+import { createFish, FishMotion, FishObject, worldLength } from './fishModels';
 
 type Phase = 'idle' | 'casting' | 'waiting' | 'bite' | 'fight' | 'landing' | 'result' | 'empty';
 
@@ -31,7 +31,7 @@ export class FishingView {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(55, 1, 0.1, 400);
-  private clock = new THREE.Clock();
+  private timer = new THREE.Timer();
   private water: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshStandardMaterial>;
   private waterBase: Float32Array;
   private bobber = new THREE.Group();
@@ -251,6 +251,7 @@ export class FishingView {
       }
     });
     this.renderer.dispose();
+    this.timer.dispose();
     this.el.remove();
   }
 
@@ -344,7 +345,7 @@ export class FishingView {
     if (this.fishObj) this.scene.remove(this.fishObj.root);
     this.fishObj = null;
     const myFish = this.fish;
-    createFish(sp.id).then((obj) => {
+    createFish(sp.id, this.fish.size).then((obj) => {
       if (this.fish !== myFish) {
         obj.dispose();
         return;
@@ -390,7 +391,8 @@ export class FishingView {
   }
 
   private tick() {
-    const dt = Math.min(0.05, this.clock.getDelta());
+    this.timer.update();
+    const dt = Math.min(0.05, this.timer.getDelta());
     this.time += dt;
     this.phaseT += dt;
     this.updateWater();
@@ -419,6 +421,7 @@ export class FishingView {
           const a = this.time * 1.2;
           const r = 0.6 + remain * 1.2;
           const target = new THREE.Vector3(this.castTarget.x + Math.cos(a) * r, -1.0, this.castTarget.z + Math.sin(a) * r);
+          this.motion('turn');
           this.moveFish(target, dt, 3);
         }
         if (remain < 0.6 && Math.random() < 0.08) bobPos.y -= 0.05; // チョンチョン
@@ -432,6 +435,7 @@ export class FishingView {
         bobPos.y = -0.25 + Math.sin(this.time * 30) * 0.05;
         if (this.fishObj) {
           this.fishObj.root.visible = true;
+          this.motion('bite');
           this.moveFish(new THREE.Vector3(bobPos.x, -0.6, bobPos.z), dt, 6);
         }
         swim = 1;
@@ -444,17 +448,19 @@ export class FishingView {
       }
       case 'fight':
         swim = this.updateFight(dt);
+        this.bobber.visible = !this.fishObj; // 糸は魚の口につながるのでウキは隠す（モデル読込前は表示）
         bobPos.set(this.fishPos.x, this.waveAt(this.fishPos.x, this.fishPos.z) - 0.05, this.fishPos.z + 0.3);
         break;
       case 'landing': {
         const k = Math.min(1, this.phaseT / 0.9);
         if (this.fishObj) {
-          const target = new THREE.Vector3(0, 2.6, 3.4);
+          this.motion('air');
+          const target = new THREE.Vector3(0, 2.7, 4.6);
           this.fishObj.root.position.lerpVectors(this.fishPos, target, THREE.MathUtils.smootherstep(k, 0, 1));
           this.fishObj.root.position.y += Math.sin(k * Math.PI) * 1.2;
-          this.fishObj.root.rotation.set(0, this.time * 1.5, Math.sin(this.time * 6) * 0.25 * (1 - k));
+          this.fishObj.root.rotation.set(0, this.time * 1.5, 0);
           // 大物でも画面に収まるよう表示サイズを制限
-          this.fishObj.root.scale.setScalar(Math.min(this.fishLen, 2.2));
+          this.fishObj.root.scale.setScalar(Math.min(Math.max(this.fishLen * 1.2, 0.9), 2.0));
         }
         this.bobber.visible = false;
         swim = 1.2;
@@ -532,9 +538,11 @@ export class FishingView {
     const sway = (bursting ? 3.5 : 2) * (1 - k * 0.6);
     const target = new THREE.Vector3(
       this.castTarget.x * (1 - k) + Math.sin(this.time * (0.8 + s * 0.05)) * sway,
-      -0.6,
+      -0.4,
       THREE.MathUtils.lerp(this.castTarget.z - 1, 1.5, k),
     );
+    // 終盤（巻き取り75%〜）で暴れていなければ弱って横倒しになる
+    this.motion(!bursting && k > 0.75 ? 'tired' : 'hooked');
     this.moveFish(target, dt, bursting ? 9 : 4);
     if (Math.random() < (bursting ? 0.25 : 0.04)) this.splash(this.fishPos, 0.5);
 
@@ -546,6 +554,10 @@ export class FishingView {
       this.setPhase('landing');
     }
     return bursting ? 1.5 : this.reeling ? 0.9 : 0.5;
+  }
+
+  private motion(m: FishMotion) {
+    this.fishObj?.setMotion(m);
   }
 
   private moveFish(target: THREE.Vector3, dt: number, speed: number) {
@@ -584,12 +596,14 @@ export class FishingView {
 
   private updateLine() {
     const pts = this.line.geometry.attributes.position as THREE.BufferAttribute;
-    const visible = this.bobber.visible && this.phase !== 'idle' && this.phase !== 'empty' && this.phase !== 'landing';
+    // ファイト中と抜き上げ中は魚の口に糸をつなぐ
+    const toMouth = (this.phase === 'fight' || this.phase === 'landing') && !!this.fishObj;
+    const visible = toMouth || (this.bobber.visible && this.phase !== 'idle' && this.phase !== 'empty');
     this.line.visible = visible;
     if (!visible) return;
     const a = ROD_TIP;
-    const b = this.bobber.position;
-    const taut = this.phase === 'fight' ? this.tension / 100 : this.phase === 'casting' ? 1 : 0.2;
+    const b = toMouth ? this.fishObj!.mouthWorld(this.mouthTmp) : this.bobber.position;
+    const taut = this.phase === 'fight' ? this.tension / 100 : this.phase === 'casting' || this.phase === 'landing' ? 1 : 0.2;
     const sag = (1 - taut) * 0.8;
     for (let i = 0; i < pts.count; i++) {
       const t = i / (pts.count - 1);
@@ -598,6 +612,7 @@ export class FishingView {
     pts.needsUpdate = true;
   }
 
+  private mouthTmp = new THREE.Vector3();
   private rippleLife = 0;
   private splash(p: THREE.Vector3, size = 1) {
     this.ripple.position.set(p.x, 0.05, p.z);
