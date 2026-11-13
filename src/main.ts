@@ -68,6 +68,22 @@ else geo.start(params.has('sim'));
 
 let fishing: FishingView | null = null;
 
+const AUTO_KEY = 'tsuriichi.auto';
+function loadAuto(): boolean {
+  try {
+    return localStorage.getItem(AUTO_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+function saveAuto(v: boolean) {
+  try {
+    localStorage.setItem(AUTO_KEY, v ? '1' : '0');
+  } catch {
+    /* noop */
+  }
+}
+
 function startFishing(spot: Spot) {
   if (fishing) return;
   mapView.setVisible(false);
@@ -75,7 +91,8 @@ function startFishing(spot: Spot) {
   fishing = new FishingView(spot, computeStats(state), {
     rollFish: () => rollFish(spot, computeStats(state), rng),
     stock: () => spotStock(state, spot.id),
-    onLanded: (fish) => onLanded(spot, fish),
+    onLanded: (fish, auto) => onLanded(spot, fish, auto),
+    onAutoChange: saveAuto,
     onEscaped: () => {
       // 逃しても魚は減る（同じスポットで無限に粘れないように）
       consumeSpot(state, spot.id);
@@ -87,11 +104,11 @@ function startFishing(spot: Spot) {
       app.classList.remove('in-fishing');
       showTab('map');
     },
-  });
+  }, { auto: loadAuto() });
   document.body.appendChild(fishing.el);
 }
 
-async function onLanded(spot: Spot, fish: CaughtFish): Promise<void> {
+async function onLanded(spot: Spot, fish: CaughtFish, auto: boolean): Promise<void> {
   const sp = FISH_BY_ID[fish.speciesId];
   const stats = computeStats(state);
   consumeSpot(state, spot.id);
@@ -137,6 +154,20 @@ async function onLanded(spot: Spot, fish: CaughtFish): Promise<void> {
   );
   if (best) m.el.classList.add(`glow-${best}`);
   m.el.querySelector('.act-ok')!.addEventListener('click', m.close);
+  if (auto) {
+    // 自動釣り中は結果を少し見せてから自動で閉じる（レジェンダリーは長めに）
+    const btn = m.el.querySelector('.act-ok') as HTMLButtonElement;
+    let left = best === 'legendary' ? 6 : 3;
+    btn.textContent = `つづける（${left}）`;
+    const iv = setInterval(() => {
+      left--;
+      if (left <= 0) {
+        clearInterval(iv);
+        m.close();
+      } else btn.textContent = `つづける（${left}）`;
+    }, 1000);
+    m.closed.then(() => clearInterval(iv));
+  }
   if (best === 'legendary') toast(`🔥 ${ITEM_RARITY_INFO.legendary.label}ドロップ！`);
   await m.closed;
 }

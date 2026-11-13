@@ -137,3 +137,47 @@ button { font: inherit; color: inherit; }
 .bar.tension .danger { position: absolute; top: 0; bottom: 0; left: 80%; right: 0; background: repeating-linear-gradient(45deg, rgba(255,59,48,.25) 0 6px, transparent 6px 12px); }
 .bar.tension.hot { animation: shake .1s infinite; }
 .bar.progress .fill { background: linear-gradient(90deg, #2f9bff, #5fe0ff); }
+
+/* 自動釣り */
+.btn-auto { margin-left: auto; background: rgba(0,0,0,.5); border: 2px solid rgba(255,255,255,.35); border-radius: 999px; padding: 6px 12px; font-size: 13px; font-weight: 800; letter-spacing: .05em; }
+.btn-auto.on { background: linear-gradient(180deg, #ffcf3a, #ff8a00); border-color: #fff3c0; color: #4a1a00; box-shadow: 0 0 12px rgba(255,160,0,.7); animation: auto-pulse 1.6s ease-in-out infinite; }
+@keyframes auto-pulse { 50% { box-shadow: 0 0 20px rgba(255,190,0,.95); } }
+
+/* 魚のHPバー */
+.hp-label { display: flex; justify-content: space-between; gap: 8px; font-weight: 700; }
+.hp-num { font-variant-numeric: tabular-nums; }
+.bar.hp .fill { background: linear-gradient(180deg, #ff7a7a, #e0182d); transition: width .12s; }
+
+/* ダメージ数字 */
+.dmg-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.dmg {
+  position: absolute; transform: translate(-50%, -50%);
+  font-family: "Arial Black", "Helvetica Neue", Impact, sans-serif; font-weight: 900; font-style: italic;
+  font-size: 34px; line-height: 1; letter-spacing: -0.06em; white-space: nowrap;
+  background: linear-gradient(180deg, #fff6b0 0%, #ffd23a 35%, #ff8a00 70%, #e84a00 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  -webkit-text-stroke: 1.5px #5a1a00; paint-order: stroke fill;
+  filter: drop-shadow(0 2px 0 #3a0e00) drop-shadow(0 0 3px rgba(255,255,255,.6));
+  animation: dmg-pop 1.25s cubic-bezier(.2,.9,.3,1) forwards;
+}
+.dmg.crit {
+  font-size: 44px;
+  background: linear-gradient(180deg, #fff 0%, #ff9ad0 30%, #ff2a6a 65%, #b0003a 100%);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-stroke: 1.5px #3a0018;
+  filter: drop-shadow(0 2px 0 #2a0010) drop-shadow(0 0 6px rgba(255,230,120,.9));
+}
+.dmg.crit::before { content: "会心"; position: absolute; left: 50%; top: -14px; transform: translateX(-50%); font-size: 13px; font-style: normal; letter-spacing: 0; color: #fff3a0; -webkit-text-stroke: 0; background: none; filter: none; text-shadow: 0 1px 2px #000; }
+@keyframes dmg-pop {
+  0% { transform: translate(-50%, -50%) scale(1.8); opacity: 0; }
+  12% { transform: translate(-50%, -50%) scale(.92); opacity: 1; }
+  22% { transform: translate(-50%, -50%) scale(1.05); }
+  30% { transform: translate(-50%, -50%) scale(1); }
+  75% { transform: translate(-50%, -62%) scale(1); opacity: 1; }
+  100% { transform: translate(-50%, -85%) scale(.95); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) { .dmg { animation-duration: .9s; } .btn-auto.on { animation: none; } }
+
+/* ファイト中はメッセージをバーの上に下げて、ダメージ数字と重ならないようにする */
+.fishing[data-phase="fight"] .fishing-msg-wrap { justify-content: flex-end; padding-bottom: 8px; }
+.fishing[data-phase="fight"] .fishing-msg { font-size: 22px; min-height: 0; }

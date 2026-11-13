@@ -10,12 +10,17 @@ type Phase = 'idle' | 'casting' | 'waiting' | 'bite' | 'fight' | 'landing' | 're
 export interface FishingCallbacks {
   rollFish(): CaughtFish;
   /** 釣り上げ成功。演出後に呼ばれる。戻り値の Promise 解決で次のキャストへ */
-  onLanded(fish: CaughtFish): Promise<void>;
+  onLanded(fish: CaughtFish, auto: boolean): Promise<void>;
   onEscaped(reason: string): void;
   /** 残りの魚数 */
   stock(): number;
   onExit(): void;
+  /** 自動釣りの切り替え（設定の保存用） */
+  onAutoChange(auto: boolean): void;
 }
+
+/** 1秒あたりの巻き取りヒット数 */
+const HITS_PER_SEC = 4;
 
 const ENV = {
   river: { water: 0x3f8f8a, sky: 0x9fd3e8, ground: 0x6b8f3a },
@@ -56,7 +61,21 @@ export class FishingView {
 
   // ファイト
   private tension = 0;
-  private progress = 0;
+  private fishHp = 0;
+  private fishMaxHp = 1;
+  private hitAcc = 0;
+  private fightT = 0;
+  private dmgStack = 0;
+  private lastHitT = -10;
+  private spotLevel: number;
+
+  // 自動釣り
+  private auto = false;
+  private autoReactAt = 0;
+  private dmgLayer: HTMLElement;
+  private autoBtn: HTMLButtonElement;
+  private hpName: HTMLElement;
+  private hpNum: HTMLElement;
   private slackT = 0;
   private burstT = 0;
   private nextBurst = 0;
@@ -67,10 +86,11 @@ export class FishingView {
   private sub: HTMLElement;
   private bars: HTMLElement;
   private tensionFill: HTMLElement;
-  private progressFill: HTMLElement;
+  private hpFill: HTMLElement;
   private stockEl: HTMLElement;
 
-  constructor(spot: Spot, private stats: Stats, private cb: FishingCallbacks) {
+  constructor(spot: Spot, private stats: Stats, private cb: FishingCallbacks, opts: { auto?: boolean } = {}) {
+    this.spotLevel = spot.level;
     this.el = document.createElement('div');
     this.el.className = 'fishing';
     this.el.innerHTML = `
@@ -82,7 +102,9 @@ export class FishingView {
             <div class="fishing-spot-name">${BIOME_LABEL[spot.biome]}・${spot.name} <span class="lv">Lv${spot.level}</span></div>
             <div class="fishing-stock"></div>
           </div>
+          <button class="btn-auto" aria-pressed="false">AUTO</button>
         </div>
+        <div class="dmg-layer"></div>
         <div class="fishing-msg-wrap">
           <div class="fishing-msg"></div>
           <div class="fishing-sub"></div>
@@ -90,15 +112,24 @@ export class FishingView {
         <div class="fishing-bars hidden">
           <div class="bar-label">テンション</div>
           <div class="bar tension"><div class="fill"></div><div class="danger"></div></div>
-          <div class="bar-label">巻き取り</div>
-          <div class="bar progress"><div class="fill"></div></div>
+          <div class="bar-label hp-label"><span class="hp-name"></span><span class="hp-num"></span></div>
+          <div class="bar hp"><div class="fill"></div></div>
         </div>
       </div>`;
     this.msg = this.el.querySelector('.fishing-msg')!;
     this.sub = this.el.querySelector('.fishing-sub')!;
     this.bars = this.el.querySelector('.fishing-bars')!;
     this.tensionFill = this.el.querySelector('.bar.tension .fill')!;
-    this.progressFill = this.el.querySelector('.bar.progress .fill')!;
+    this.hpFill = this.el.querySelector('.bar.hp .fill')!;
+    this.hpName = this.el.querySelector('.hp-name')!;
+    this.hpNum = this.el.querySelector('.hp-num')!;
+    this.dmgLayer = this.el.querySelector('.dmg-layer')!;
+    this.autoBtn = this.el.querySelector('.btn-auto')!;
+    this.autoBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.setAuto(!this.auto);
+      this.cb.onAutoChange(this.auto);
+    });
     this.stockEl = this.el.querySelector('.fishing-stock')!;
     this.el.querySelector('.btn-back')!.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -117,9 +148,12 @@ export class FishingView {
     hud.addEventListener('pointerdown', (e) => {
       if ((e.target as HTMLElement).closest('button')) return;
       e.preventDefault();
+      if (this.auto) return; // 自動釣り中はタップを使わない
       this.onPress();
     });
-    const release = () => (this.reeling = false);
+    const release = () => {
+      if (!this.auto) this.reeling = false;
+    };
     hud.addEventListener('pointerup', release);
     hud.addEventListener('pointercancel', release);
     hud.addEventListener('pointerleave', release);
@@ -235,6 +269,7 @@ export class FishingView {
 
     this.hookWindow = 0.9 * (1 + stats.hookWindow / 100);
     this.setPhase(cb.stock() > 0 ? 'idle' : 'empty');
+    this.setAuto(!!opts.auto);
     this.renderer.setAnimationLoop(() => this.tick());
   }
 
@@ -275,21 +310,22 @@ export class FishingView {
     this.stockEl.textContent = `残り ${'🐟'.repeat(stock)}${'・'.repeat(Math.max(0, 5 - stock))}`;
     switch (p) {
       case 'idle':
-        this.say('タップでキャスト', '');
+        this.say(this.auto ? '' : 'タップでキャスト', '');
         this.bobber.visible = false;
         break;
       case 'casting':
         this.say('', '');
         break;
       case 'waiting':
-        this.say('アタリを待て…', 'ウキが沈んだらタップ！');
+        this.say('アタリを待て…', this.auto ? '' : 'ウキが沈んだらタップ！');
         break;
       case 'bite':
-        this.say('HIT!!', 'いまだ！タップ！');
+        this.say('HIT!!', this.auto ? '' : 'いまだ！タップ！');
+        this.autoReactAt = Math.min(this.hookWindow * 0.8, 0.2 + Math.random() * 0.3);
         try { navigator.vibrate?.(120); } catch { /* noop */ }
         break;
       case 'fight':
-        this.say('', '押して巻く／離して緩める');
+        this.say('', this.fightHint());
         break;
       case 'landing':
         this.say('釣り上げた！', '');
@@ -301,6 +337,40 @@ export class FishingView {
       case 'empty':
         this.say('魚がいないようだ…', 'しばらくすると戻ってくる。別のスポットを探そう');
         break;
+    }
+  }
+
+  private fightHint(): string {
+    return this.auto ? '' : '押して巻く／離して緩める';
+  }
+
+  private setAuto(v: boolean) {
+    this.auto = v;
+    this.autoBtn.classList.toggle('on', v);
+    this.autoBtn.setAttribute('aria-pressed', String(v));
+    this.autoBtn.textContent = v ? 'AUTO ON' : 'AUTO';
+    this.el.classList.toggle('auto', v);
+    if (!v) this.reeling = false;
+    if (this.phase === 'idle' || this.phase === 'fight') this.setPhase(this.phase);
+  }
+
+  /** 自動釣り: キャスト・アワセ・テンション管理を代わりに行う */
+  private updateAuto() {
+    if (!this.auto) return;
+    switch (this.phase) {
+      case 'idle':
+        if (this.phaseT > 0.8) this.cast();
+        break;
+      case 'bite':
+        if (this.phaseT >= this.autoReactAt) this.startFight();
+        break;
+      case 'fight': {
+        // 暴れている間は早めに緩める（ヒステリシス付き）
+        const high = this.burstT > 0 ? 62 : 80;
+        if (this.reeling && this.tension > high) this.reeling = false;
+        else if (!this.reeling && this.tension < 42) this.reeling = true;
+        break;
+      }
     }
   }
 
@@ -362,7 +432,13 @@ export class FishingView {
 
   private startFight() {
     this.tension = 30;
-    this.progress = 15;
+    const sizeK = 0.7 + (this.fish?.sizeRatio ?? 0.5) * 0.6;
+    this.fishMaxHp = Math.round((600 + this.fishStrength * 300) * sizeK * (1 + this.spotLevel * 0.06));
+    this.fishHp = this.fishMaxHp;
+    this.hitAcc = 0;
+    this.fightT = 0;
+    this.dmgStack = 0;
+    this.hpName.textContent = this.fish ? FISH_BY_ID[this.fish.speciesId].name : '';
     this.slackT = 0;
     this.burstT = 0;
     this.nextBurst = 1 + Math.random() * 2;
@@ -396,6 +472,7 @@ export class FishingView {
     this.time += dt;
     this.phaseT += dt;
     this.updateWater();
+    this.updateAuto();
 
     const bobPos = this.bobber.position;
     let swim = 0.3;
@@ -467,7 +544,7 @@ export class FishingView {
         if (k >= 1 && this.fish) {
           const f = this.fish;
           this.phase = 'result';
-          this.cb.onLanded(f).then(() => {
+          this.cb.onLanded(f, this.auto).then(() => {
             if (this.fishObj) this.fishObj.root.visible = false;
             this.fish = null;
             this.setPhase(this.cb.stock() > 0 ? 'idle' : 'empty');
@@ -509,32 +586,43 @@ export class FishingView {
     const bursting = this.burstT > 0;
     if (bursting) {
       this.burstT -= dt;
-      if (this.burstT <= 0) this.say('', '押して巻く／離して緩める');
+      if (this.burstT <= 0) this.say('', this.fightHint());
     }
 
+    this.fightT += dt;
     const lineFactor = 22 / (22 + strength);
     if (this.reeling) {
-      const reel = Math.max(2.5, 9 + power * 0.55 - s * 1.0);
-      this.progress += reel * dt * (bursting ? 0.4 : 1);
+      // 巻くたびにヒット。パワーでダメージ、会心率で2倍
+      this.hitAcc += dt * HITS_PER_SEC;
+      while (this.hitAcc >= 1) {
+        this.hitAcc -= 1;
+        const crit = Math.random() * 100 < this.stats.crit;
+        const dmg = Math.max(1, Math.round(power * 10 * (0.85 + Math.random() * 0.3) * (crit ? 2 : 1) * (bursting ? 0.4 : 1)));
+        this.fishHp -= dmg;
+        this.spawnDamage(dmg, crit);
+      }
       this.tension += (7 + s * 4) * lineFactor * (bursting ? 2.4 : 1) * dt;
     } else {
       this.tension -= 34 * dt;
-      this.progress -= s * 0.8 * (bursting ? 2.2 : 1) * dt;
+      // 緩めている間、魚は体力を回復する。長引くほど魚が疲れて回復しにくくなる（膠着しないように）
+      const stamina = Math.max(0.15, 1 - this.fightT / 40);
+      this.fishHp += this.fishMaxHp * s * 0.008 * (bursting ? 2.2 : 1) * stamina * dt;
     }
     this.tension = THREE.MathUtils.clamp(this.tension, 0, 100);
-    this.progress = THREE.MathUtils.clamp(this.progress, 0, 100);
+    this.fishHp = THREE.MathUtils.clamp(this.fishHp, 0, this.fishMaxHp);
 
     if (this.tension < 6) this.slackT += dt;
     else this.slackT = 0;
 
     this.tensionFill.style.width = `${this.tension}%`;
     this.tensionFill.parentElement!.classList.toggle('hot', this.tension > 80);
-    this.progressFill.style.width = `${this.progress}%`;
+    this.hpFill.style.width = `${(this.fishHp / this.fishMaxHp) * 100}%`;
+    this.hpNum.textContent = `${Math.ceil(this.fishHp).toLocaleString()} / ${this.fishMaxHp.toLocaleString()}`;
 
     if (this.slackT > 2.5) this.say('ラインが緩んでいる！', '巻かないとバレる');
 
     // 魚の位置: 進捗で手前へ、左右に暴れる
-    const k = this.progress / 100;
+    const k = 1 - this.fishHp / this.fishMaxHp;
     const sway = (bursting ? 3.5 : 2) * (1 - k * 0.6);
     const target = new THREE.Vector3(
       this.castTarget.x * (1 - k) + Math.sin(this.time * (0.8 + s * 0.05)) * sway,
@@ -548,12 +636,35 @@ export class FishingView {
 
     if (this.tension >= 100) this.escape('break');
     else if (this.slackT > 4) this.escape('slack');
-    else if (this.progress >= 100) {
+    else if (this.fishHp <= 0) {
       this.reeling = false;
       this.splash(this.fishPos, 1.5);
       this.setPhase('landing');
     }
     return bursting ? 1.5 : this.reeling ? 0.9 : 0.5;
+  }
+
+  /** ダメージ数字を魚の上に積み上げて表示する */
+  private spawnDamage(value: number, crit: boolean) {
+    const p = (this.fishObj?.root.position ?? this.fishPos).clone();
+    p.y += 0.5;
+    p.project(this.camera);
+    const rect = this.dmgLayer.getBoundingClientRect();
+    if (p.z > 1) return;
+    if (this.time - this.lastHitT > 0.8) this.dmgStack = 0;
+    this.lastHitT = this.time;
+    const x = ((p.x + 1) / 2) * rect.width + (Math.random() - 0.5) * 24;
+    const y = ((1 - p.y) / 2) * rect.height;
+    const el = document.createElement('div');
+    el.className = crit ? 'dmg crit' : 'dmg';
+    el.textContent = String(value);
+    // 新しいヒットほど上に積む
+    el.style.left = `${x}px`;
+    el.style.top = `${Math.max(60, y - this.dmgStack * (crit ? 40 : 34))}px`;
+    this.dmgStack = (this.dmgStack + 1) % 10;
+    this.dmgLayer.appendChild(el);
+    setTimeout(() => el.remove(), 1300);
+    if (crit) this.splash(this.fishPos, 0.8);
   }
 
   private motion(m: FishMotion) {
