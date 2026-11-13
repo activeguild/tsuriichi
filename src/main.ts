@@ -62,7 +62,9 @@ app.querySelectorAll<HTMLButtonElement>('.tabs button').forEach((b) =>
 );
 
 const params = new URLSearchParams(location.search);
-geo.start(params.has('sim'));
+const at = params.get('at')?.split(',').map(Number);
+if (at && at.length === 2 && at.every(Number.isFinite)) geo.startSim({ lat: at[0], lng: at[1] });
+else geo.start(params.has('sim'));
 
 let fishing: FishingView | null = null;
 

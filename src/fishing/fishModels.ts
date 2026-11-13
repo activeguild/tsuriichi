@@ -2,15 +2,62 @@ import * as THREE from 'three';
 import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { FISH_BY_ID, FishSpecies } from '../data/fish';
+import {
+  createFish as createKitActor, loadFish as loadKitFish, type FishActor, type FishKitMotion,
+} from '../vendor/fish-kit/fish-kit.js';
 
 /**
  * 魚の3Dオブジェクト。
  * 規約: ローカル座標で「頭が +X 方向」「全長 = 1」。呼び出し側で scale と向きを決める。
  */
+export type FishMotion = FishKitMotion;
+
 export interface FishObject {
   root: THREE.Object3D;
+  /** 動きの種類（Fish Kit のモデルだけが細かく対応。ほかは泳ぐ速さで近似） */
+  setMotion(m: FishMotion): void;
+  /** 口先のワールド座標（釣り糸をつなぐ位置） */
+  mouthWorld(out: THREE.Vector3): THREE.Vector3;
   update(dt: number, swimSpeed: number): void;
   dispose(): void;
+}
+
+const KIT_BASE = `${import.meta.env.BASE_URL}fish-kit/`;
+const kitLoads = new Map<string, Promise<void>>();
+
+function loadKit(kitId: string): Promise<void> {
+  let p = kitLoads.get(kitId);
+  if (!p) {
+    p = loadKitFish(KIT_BASE, [kitId]);
+    kitLoads.set(kitId, p);
+  }
+  return p;
+}
+
+/** Fish Kit の魚。キットは「口が +Z・実寸(m)」なので、「頭が +X・全長 1」に合わせて包む */
+async function createKitFish(kitId: string, sizeCm: number): Promise<FishObject> {
+  await loadKit(kitId);
+  const actor: FishActor = createKitActor(kitId, sizeCm);
+  actor.setMotion('swim');
+  const root = new THREE.Group();
+  const orient = new THREE.Group();
+  orient.rotation.y = Math.PI / 2;
+  orient.scale.setScalar(1 / actor.length);
+  orient.add(actor.object);
+  root.add(orient);
+  return {
+    root,
+    setMotion: (m) => actor.setMotion(m),
+    mouthWorld: (out) => actor.object.localToWorld(actor.getMouth(out)),
+    update(dt, swimSpeed) {
+      // 泳ぎ系の動きでは、尾の振りを実際の移動の速さに合わせる
+      if (actor.motion === 'swim' || actor.motion === 'power' || actor.motion === 'turn') {
+        actor.drive = { speed: actor.length * (0.5 + swimSpeed * 3), turnRate: 0 };
+      } else actor.drive = null;
+      actor.update(dt);
+    },
+    dispose: () => actor.dispose(),
+  };
 }
 
 interface ManifestEntry {
@@ -47,15 +94,21 @@ function loadGltf(url: string): Promise<GLTF> {
   return p;
 }
 
-export async function hasCustomModel(speciesId: string): Promise<boolean> {
-  const m = await loadManifest();
-  return !!m[speciesId];
-}
-
-/** 魚モデルを作る。manifest にあれば GLB/GLTF、なければ手続き生成 */
-export async function createFish(speciesId: string): Promise<FishObject> {
+/**
+ * 魚モデルを作る。優先順: manifest の GLB/GLTF → Fish Kit → 手続き生成
+ * sizeCm は釣れた魚の体長（Fish Kit は体長で体型が少し変わる・幼魚モデルの切り替えに使う）
+ */
+export async function createFish(speciesId: string, sizeCm: number): Promise<FishObject> {
   const species = FISH_BY_ID[speciesId];
   const manifest = await loadManifest();
+  if (!manifest[speciesId] && species.kitId) {
+    const kitId = species.young && sizeCm < species.young.belowCm ? species.young.kitId : species.kitId;
+    try {
+      return await createKitFish(kitId, sizeCm);
+    } catch (e) {
+      console.warn(`fish-kit load failed for ${kitId}, fallback to procedural`, e);
+    }
+  }
   const entry = manifest[speciesId];
   if (entry) {
     try {
@@ -107,6 +160,8 @@ async function createGltfFish(entry: ManifestEntry): Promise<FishObject> {
   let t = 0;
   return {
     root,
+    setMotion() {},
+    mouthWorld: (out) => root.localToWorld(out.set(0.5, 0, 0)),
     update(dt, swimSpeed) {
       t += dt;
       if (mixer) mixer.update(dt * (0.5 + swimSpeed));
@@ -225,6 +280,8 @@ function createProceduralFish(sp: FishSpecies): FishObject {
   let t = Math.random() * 10;
   return {
     root,
+    setMotion() {},
+    mouthWorld: (out) => root.localToWorld(out.set(0.5, 0, 0)),
     update(dt, swimSpeed) {
       t += dt * (3 + swimSpeed * 10);
       tailPivot.rotation.y = Math.sin(t) * (0.35 + swimSpeed * 0.35);
