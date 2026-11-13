@@ -113,8 +113,10 @@ export interface CatchReward {
 export function rollRewards(rng: Rng, fish: CaughtFish, spot: Spot, stats: Stats, playerLevel: number): CatchReward {
   const sp = FISH.find((f) => f.id === fish.speciesId)!;
   const ri = RARITY_ORDER.indexOf(sp.rarity);
-  const baseXp = 10 * (1 + ri * 1.5) * (1 + fish.sizeRatio) + spot.level * 2;
-  const baseCoins = 5 * (1 + ri * 2) * (1 + fish.sizeRatio * 2);
+  // 高レベルのスポットほど報酬が増える（強くなって挑む価値を出す）
+  const lvK = 1 + spot.level * 0.1;
+  const baseXp = 10 * (1 + ri * 1.5) * (1 + fish.sizeRatio) * lvK;
+  const baseCoins = 5 * (1 + ri * 2) * (1 + fish.sizeRatio * 2) * lvK;
   const ilvl = Math.max(1, Math.round((playerLevel + spot.level) / 2 + ri * 2 + rng.int(-1, 2)));
 
   // ドロップ個数: 高レア魚ほど多い

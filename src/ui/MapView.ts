@@ -1,7 +1,8 @@
 import { BIOME_ICON, BIOME_LABEL, FISH_RARITY_INFO } from '../data/fish';
 import { distanceM, FISHING_RANGE_M, GeoTracker, LatLng, Spot, spotsAround, toLocalM } from '../geo';
 import { fishPool, isNight } from '../loot';
-import { GameState, SPOT_MAX_STOCK, spotStock } from '../state';
+import { computeStats, GameState, SPOT_MAX_STOCK, spotStock } from '../state';
+import { combatPower, recommendedPower } from '../balance';
 import { esc } from './common';
 
 const BIOME_COLOR: Record<string, string> = {
@@ -163,6 +164,7 @@ export class MapView {
 
     // スポット
     const state = this.getState();
+    const myCp = combatPower(computeStats(state));
     const t = performance.now() / 1000;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -194,8 +196,10 @@ export class MapView {
       }
       ctx.font = '18px sans-serif';
       ctx.fillText(BIOME_ICON[s.biome], p.x, p.y + 1);
+      // 推奨戦闘力に対して自分が足りているかで色分け（白=余裕 / 黄=ちょうど / 赤=格上）
+      const rec = recommendedPower(s.level);
       ctx.font = 'bold 11px sans-serif';
-      ctx.fillStyle = '#fff';
+      ctx.fillStyle = myCp >= rec ? '#fff' : myCp >= rec * 0.6 ? '#ffd60a' : '#ff6b6b';
       ctx.fillText(`Lv${s.level}`, p.x, p.y + r + 10);
     }
 
@@ -241,6 +245,14 @@ export class MapView {
     this.renderInfo();
   }
 
+  private recLine(level: number): string {
+    const rec = recommendedPower(level);
+    const my = combatPower(computeStats(this.getState()));
+    const cls = my >= rec ? 'ok' : my >= rec * 0.6 ? 'close' : 'hard';
+    const note = { ok: '余裕', close: '手ごわい', hard: '格上（装備を強化しよう）' }[cls];
+    return `<div class="spot-rec ${cls}">⚔ 推奨戦闘力 ${rec.toLocaleString()}（あなた ${my.toLocaleString()}・${note}）</div>`;
+  }
+
   renderInfo() {
     const s = this.selected;
     const pos = this.geo.pos;
@@ -271,6 +283,7 @@ export class MapView {
       <button class="close">×</button>
       <div class="spot-title">${BIOME_ICON[s.biome]} ${BIOME_LABEL[s.biome]}・${esc(s.name)} <span class="lv">Lv${s.level}</span></div>
       <div class="spot-meta">距離 ${Math.round(dist)}m ・ 魚 ${stock}/${SPOT_MAX_STOCK} ・ ${isNight() ? '🌙 夜' : '☀️ 昼'}</div>
+      ${this.recLine(s.level)}
       <div class="spot-pool">${fishList}</div>
       ${action}`;
     this.info.querySelector('.close')!.addEventListener('click', () => {

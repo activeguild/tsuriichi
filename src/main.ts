@@ -5,6 +5,7 @@ import { FishingView } from './fishing/FishingView';
 import { GeoTracker, Spot } from './geo';
 import { CaughtFish, rollFish, rollRewards, salvageValue } from './loot';
 import { Rng } from './rng';
+import { combatPower } from './balance';
 import {
   addXp, computeStats, consumeSpot, GameState, INVENTORY_MAX, loadState, saveState, spotStock, xpToNext,
 } from './state';
@@ -27,6 +28,7 @@ app.innerHTML = `
     <div class="hdr-title">釣りいち</div>
     <div class="hdr-lv"></div>
     <div class="hdr-xp"><div class="fill"></div></div>
+    <div class="hdr-cp" title="戦闘力（1秒あたりの期待ダメージ）"></div>
     <div class="hdr-coins"></div>
   </header>
   <main class="main"></main>
@@ -40,6 +42,7 @@ function renderHeader() {
   app.querySelector('.hdr-lv')!.textContent = `Lv${state.level}`;
   (app.querySelector('.hdr-xp .fill') as HTMLElement).style.width = `${(state.xp / xpToNext(state.level)) * 100}%`;
   app.querySelector('.hdr-coins')!.textContent = `🪙 ${state.coins}`;
+  app.querySelector('.hdr-cp')!.textContent = `⚔ ${combatPower(computeStats(state)).toLocaleString()}`;
 }
 renderHeader();
 

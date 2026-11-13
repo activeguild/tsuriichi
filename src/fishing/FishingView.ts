@@ -4,6 +4,7 @@ import type { CaughtFish, Stats } from '../loot';
 import { isNight } from '../loot';
 import { BIOME_LABEL, FISH_BY_ID } from '../data/fish';
 import { createFish, FishMotion, FishObject, worldLength } from './fishModels';
+import { baseHitDamage, fishMaxHp, HITS_PER_SEC, pullStrength } from '../balance';
 
 type Phase = 'idle' | 'casting' | 'waiting' | 'bite' | 'fight' | 'landing' | 'result' | 'empty';
 
@@ -19,10 +20,14 @@ export interface FishingCallbacks {
   onAutoChange(auto: boolean, reason: 'user' | 'empty'): void;
 }
 
-/** 1秒あたりの巻き取りヒット数 */
-const HITS_PER_SEC = 4;
 /** 1回の巻きで出る最大ヒット数 */
 const MAX_LINES = 12;
+/** ダメージの壁の最大段数 */
+const WALL_ROWS = 16;
+/** 壁の1段の高さ(px) */
+const ROW_H = 30;
+/** 壁の上端（上のHUDに重ならない位置, px） */
+const WALL_TOP = 120;
 
 const ENV = {
   river: { water: 0x3f8f8a, sky: 0x9fd3e8, ground: 0x6b8f3a },
@@ -84,6 +89,15 @@ export class FishingView {
   private burstT = 0;
   private nextBurst = 0;
   private fishStrength = 1;
+  /** テンションに効く引きの強さ（スポットLvで強くなる） */
+  private pull = 1;
+  // ダメージの壁・コンボ
+  private wallAnchor = { x: 0, y: 0 };
+  private comboHits = 0;
+  private totalDmg = 0;
+  private comboEl!: HTMLElement;
+  private flashEl!: HTMLElement;
+  private shakeT = 0;
 
   // HUD
   private msg: HTMLElement;
@@ -109,6 +123,8 @@ export class FishingView {
           <button class="btn-auto" aria-pressed="false">AUTO</button>
         </div>
         <div class="dmg-layer"></div>
+        <div class="hit-flash"></div>
+        <div class="combo hidden"><div class="combo-hit"><b>0</b> HIT</div><div class="combo-total">TOTAL <b>0</b></div></div>
         <div class="fishing-msg-wrap">
           <div class="fishing-msg"></div>
           <div class="fishing-sub"></div>
@@ -128,6 +144,8 @@ export class FishingView {
     this.hpName = this.el.querySelector('.hp-name')!;
     this.hpNum = this.el.querySelector('.hp-num')!;
     this.dmgLayer = this.el.querySelector('.dmg-layer')!;
+    this.comboEl = this.el.querySelector('.combo')!;
+    this.flashEl = this.el.querySelector('.hit-flash')!;
     this.autoBtn = this.el.querySelector('.btn-auto')!;
     this.autoBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -322,6 +340,9 @@ export class FishingView {
     this.stockEl.textContent = `残り ${'🐟'.repeat(stock)}${'・'.repeat(Math.max(0, 5 - stock))}`;
     switch (p) {
       case 'idle':
+        this.comboHits = 0;
+        this.totalDmg = 0;
+        this.updateCombo(false);
         if (this.autoStopPending) {
           this.autoStopPending = false;
           this.setAuto(false);
@@ -433,6 +454,7 @@ export class FishingView {
     this.biteAt = (2 + Math.random() * 5) * Math.max(0.3, 1 - this.stats.biteSpeed / 100);
     // 引きの強さ: 種の強さ×サイズ
     this.fishStrength = sp.strength * (0.7 + 0.6 * this.fish.sizeRatio);
+    this.pull = pullStrength(sp.strength, this.fish.sizeRatio, this.spotLevel);
 
     // モデルを先読み
     this.fishObj?.dispose();
@@ -456,8 +478,11 @@ export class FishingView {
 
   private startFight() {
     this.tension = 30;
-    const sizeK = 0.7 + (this.fish?.sizeRatio ?? 0.5) * 0.6;
-    this.fishMaxHp = Math.round((600 + this.fishStrength * 300) * sizeK * (1 + this.spotLevel * 0.06));
+    const sp = this.fish ? FISH_BY_ID[this.fish.speciesId] : null;
+    this.fishMaxHp = fishMaxHp(sp?.strength ?? 3, this.fish?.sizeRatio ?? 0.5, this.spotLevel);
+    this.comboHits = 0;
+    this.totalDmg = 0;
+    this.updateCombo(false);
     this.fishHp = this.fishMaxHp;
     this.hitAcc = 0;
     this.fightT = 0;
@@ -589,7 +614,8 @@ export class FishingView {
     this.updateRipple(dt);
 
     // ファイト中のカメラ揺れ
-    const shake = this.phase === 'fight' ? this.tension / 100 * (this.burstT > 0 ? 0.08 : 0.025) : 0;
+    this.shakeT = Math.max(0, this.shakeT - dt);
+    const shake = (this.phase === 'fight' ? this.tension / 100 * (this.burstT > 0 ? 0.08 : 0.025) : 0) + this.shakeT * 0.6;
     this.camera.position.set((Math.random() - 0.5) * shake, 3.2 + (Math.random() - 0.5) * shake, 7.2);
     this.rod.rotation.z = this.phase === 'fight' ? Math.sin(this.time * 20) * 0.01 * (this.tension / 50) : 0;
 
@@ -598,7 +624,6 @@ export class FishingView {
 
   private updateFight(dt: number): number {
     const s = this.fishStrength;
-    const power = this.stats.power;
     const strength = this.stats.lineStrength;
 
     // 暴れ（バースト）
@@ -623,20 +648,25 @@ export class FishingView {
         this.hitAcc -= 1;
         const m = this.stats.multiHit;
         const lines = Math.min(MAX_LINES, 1 + Math.floor(m / 100) + (Math.random() * 100 < m % 100 ? 1 : 0));
-        if (lines > 1) this.dmgStack = 0; // 連撃は1回ごとに下から積み直す
+        const base = baseHitDamage(this.stats);
+        let anyCrit = false;
         for (let i = 0; i < lines; i++) {
           const crit = Math.random() * 100 < this.stats.crit;
-          const dmg = Math.max(1, Math.round(power * 10 * (0.85 + Math.random() * 0.3) * (crit ? 2 : 1) * (bursting ? 0.4 : 1)));
+          anyCrit ||= crit;
+          const dmg = Math.max(1, Math.round(base * (0.85 + Math.random() * 0.3) * (crit ? 2 : 1) * (bursting ? 0.4 : 1)));
           this.fishHp -= dmg;
-          this.spawnDamage(dmg, crit, i * 45);
+          this.totalDmg += dmg;
+          this.comboHits++;
+          this.spawnDamage(dmg, crit, i * 35, dmg / base);
         }
+        this.strikeFx(lines, anyCrit);
       }
-      this.tension += (7 + s * 4) * lineFactor * (bursting ? 2.4 : 1) * dt;
+      this.tension += (7 + this.pull * 4) * lineFactor * (bursting ? 2.4 : 1) * dt;
     } else {
       this.tension -= 34 * dt;
       // 緩めている間、魚は体力を回復する。長引くほど魚が疲れて回復しにくくなる（膠着しないように）
-      const stamina = Math.max(0.15, 1 - this.fightT / 40);
-      this.fishHp += this.fishMaxHp * s * 0.008 * (bursting ? 2.2 : 1) * stamina * dt;
+      const stamina = Math.max(0.15, 1 - this.fightT / 60);
+      this.fishHp += this.fishMaxHp * Math.min(10, s) * 0.008 * (bursting ? 2.2 : 1) * stamina * dt;
     }
     this.tension = THREE.MathUtils.clamp(this.tension, 0, 100);
     this.fishHp = THREE.MathUtils.clamp(this.fishHp, 0, this.fishMaxHp);
@@ -674,30 +704,77 @@ export class FishingView {
     return bursting ? 1.5 : this.reeling ? 0.9 : 0.5;
   }
 
-  /** ダメージ数字を魚の上に積み上げて表示する */
-  private spawnDamage(value: number, crit: boolean, delayMs = 0) {
-    const p = (this.fishObj?.root.position ?? this.fishPos).clone();
-    p.y += 0.5;
-    p.project(this.camera);
+  /**
+   * ダメージ数字を魚の上に積み上げて「壁」にする。
+   * 連続して巻いている間は同じ位置を基点に上へ積み続け、少し手を止めると基点を取り直す。
+   */
+  private spawnDamage(value: number, crit: boolean, delayMs: number, ratio: number) {
     const rect = this.dmgLayer.getBoundingClientRect();
-    if (p.z > 1) return;
-    if (this.time - this.lastHitT > 0.8) this.dmgStack = 0;
+    if (this.time - this.lastHitT > 0.8 || this.dmgStack === 0) {
+      const p = (this.fishObj?.root.position ?? this.fishPos).clone();
+      p.y += 0.4;
+      p.project(this.camera);
+      if (p.z > 1) return;
+      this.dmgStack = 0;
+      this.wallAnchor = {
+        x: THREE.MathUtils.clamp(((p.x + 1) / 2) * rect.width, 100, rect.width - 100),
+        y: THREE.MathUtils.clamp(((1 - p.y) / 2) * rect.height, rect.height * 0.55, rect.height * 0.68),
+      };
+    }
     this.lastHitT = this.time;
-    const x = ((p.x + 1) / 2) * rect.width + (Math.random() - 0.5) * 24;
-    const y = ((1 - p.y) / 2) * rect.height;
+    // 画面に収まる段数で折り返す（下から上へ積み、上まで来たら下から重ねる）
+    const rows = Math.max(4, Math.min(WALL_ROWS, Math.floor((this.wallAnchor.y - WALL_TOP) / ROW_H)));
+    const row = this.dmgStack % rows;
+    this.dmgStack = (this.dmgStack + 1) % rows;
+    // 段ごとに左右へ少しずらしてギザギザに積む
+    const x = this.wallAnchor.x + (row % 2 ? 1 : -1) * (6 + Math.random() * 10);
+    const y = this.wallAnchor.y - row * ROW_H;
     const el = document.createElement('div');
-    el.className = crit ? 'dmg crit' : 'dmg';
+    // 大きいダメージほど大きく
+    const big = ratio >= 1.9 ? ' huge' : ratio >= 1.1 ? ' big' : '';
+    el.className = `dmg${crit ? ' crit' : ''}${big}`;
     el.textContent = String(value);
-    // 新しいヒットほど上に積む
     el.style.left = `${x}px`;
-    el.style.top = `${Math.max(60, y - this.dmgStack * (crit ? 40 : 34))}px`;
-    this.dmgStack = (this.dmgStack + 1) % MAX_LINES;
-    // 連撃は少しずつずらして出すと連打感が出る
+    el.style.top = `${y}px`;
+    el.style.zIndex = String(100 + row);
     setTimeout(() => {
       this.dmgLayer.appendChild(el);
-      setTimeout(() => el.remove(), 1300);
+      setTimeout(() => el.remove(), 1700);
     }, delayMs);
-    if (crit) this.splash(this.fishPos, 0.8);
+  }
+
+  /** 1回の巻き（連撃をまとめた1ストライク）の演出：火花・揺れ・会心のフラッシュ */
+  private strikeFx(lines: number, crit: boolean) {
+    const p = (this.fishObj?.root.position ?? this.fishPos).clone();
+    p.project(this.camera);
+    const rect = this.dmgLayer.getBoundingClientRect();
+    const spark = document.createElement('div');
+    spark.className = `hit-spark${crit ? ' crit' : ''}`;
+    spark.style.left = `${((p.x + 1) / 2) * rect.width}px`;
+    spark.style.top = `${((1 - p.y) / 2) * rect.height}px`;
+    spark.style.setProperty('--s', String(Math.min(2.4, 0.8 + lines * 0.18)));
+    this.dmgLayer.appendChild(spark);
+    setTimeout(() => spark.remove(), 400);
+    this.shakeT = Math.max(this.shakeT, crit ? 0.22 : 0.08 + lines * 0.015);
+    if (crit) {
+      this.flashEl.classList.remove('on');
+      void this.flashEl.offsetWidth; // アニメーションをやり直す
+      this.flashEl.classList.add('on');
+      this.splash(this.fishPos, 0.8);
+    }
+    this.updateCombo(true);
+  }
+
+  private updateCombo(bump: boolean) {
+    this.comboEl.classList.toggle('hidden', this.comboHits === 0);
+    this.comboEl.querySelector('.combo-hit b')!.textContent = String(this.comboHits);
+    this.comboEl.querySelector('.combo-total b')!.textContent = this.totalDmg.toLocaleString();
+    this.comboEl.classList.toggle('hot', this.comboHits >= 50);
+    if (bump) {
+      this.comboEl.classList.remove('bump');
+      void this.comboEl.offsetWidth;
+      this.comboEl.classList.add('bump');
+    }
   }
 
   private motion(m: FishMotion) {
