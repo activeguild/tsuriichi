@@ -181,3 +181,19 @@ button { font: inherit; color: inherit; }
 /* ファイト中はメッセージをバーの上に下げて、ダメージ数字と重ならないようにする */
 .fishing[data-phase="fight"] .fishing-msg-wrap { justify-content: flex-end; padding-bottom: 8px; }
 .fishing[data-phase="fight"] .fishing-msg { font-size: 22px; min-height: 0; }
+
+/* 自動釣りの釣果リザルト */
+.session-result .sr-title { font-size: 20px; font-weight: 900; letter-spacing: .04em; background: linear-gradient(180deg, #fff6b0, #ffb300); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.sr-sub { color: var(--muted); font-size: 12px; margin: 2px 0 10px; }
+.sr-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 10px; }
+.sr-stats div { background: rgba(0,0,0,.25); border-radius: 10px; padding: 6px 0; display: flex; flex-direction: column; }
+.sr-stats b { font-size: 22px; font-variant-numeric: tabular-nums; }
+.sr-stats span { font-size: 11px; color: var(--muted); }
+.sr-top { font-size: 14px; margin-bottom: 6px; }
+.sr-fish-list { display: grid; gap: 4px; text-align: left; }
+.sr-fish { display: flex; align-items: center; gap: 6px; background: rgba(0,0,0,.2); border-radius: 8px; padding: 6px 10px; font-size: 13px; flex-wrap: wrap; }
+.sr-stars { font-size: 10px; }
+.sr-name { font-weight: 700; }
+.sr-count { margin-left: auto; font-weight: 800; font-variant-numeric: tabular-nums; }
+.sr-size { color: var(--muted); font-size: 12px; min-width: 6.5em; text-align: right; }
+.sr-rc { margin-left: 8px; font-weight: 700; }

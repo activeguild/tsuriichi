@@ -16,11 +16,13 @@ export interface FishingCallbacks {
   stock(): number;
   onExit(): void;
   /** 自動釣りの切り替え（設定の保存用） */
-  onAutoChange(auto: boolean): void;
+  onAutoChange(auto: boolean, reason: 'user' | 'empty'): void;
 }
 
 /** 1秒あたりの巻き取りヒット数 */
 const HITS_PER_SEC = 4;
+/** 1回の巻きで出る最大ヒット数 */
+const MAX_LINES = 12;
 
 const ENV = {
   river: { water: 0x3f8f8a, sky: 0x9fd3e8, ground: 0x6b8f3a },
@@ -71,6 +73,8 @@ export class FishingView {
 
   // 自動釣り
   private auto = false;
+  /** ファイト中にAUTOを切ったときは、その魚が終わってから止める */
+  private autoStopPending = false;
   private autoReactAt = 0;
   private dmgLayer: HTMLElement;
   private autoBtn: HTMLButtonElement;
@@ -127,8 +131,16 @@ export class FishingView {
     this.autoBtn = this.el.querySelector('.btn-auto')!;
     this.autoBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      this.setAuto(!this.auto);
-      this.cb.onAutoChange(this.auto);
+      if (!this.auto) {
+        this.setAuto(true);
+        this.cb.onAutoChange(true, 'user');
+      } else if (['idle', 'empty', 'casting', 'waiting'].includes(this.phase)) {
+        this.setAuto(false);
+        this.cb.onAutoChange(false, 'user');
+      } else {
+        this.autoStopPending = !this.autoStopPending;
+        this.autoBtn.textContent = this.autoStopPending ? 'AUTO 終了中…' : 'AUTO ON';
+      }
     });
     this.stockEl = this.el.querySelector('.fishing-stock')!;
     this.el.querySelector('.btn-back')!.addEventListener('click', (e) => {
@@ -310,6 +322,11 @@ export class FishingView {
     this.stockEl.textContent = `残り ${'🐟'.repeat(stock)}${'・'.repeat(Math.max(0, 5 - stock))}`;
     switch (p) {
       case 'idle':
+        if (this.autoStopPending) {
+          this.autoStopPending = false;
+          this.setAuto(false);
+          this.cb.onAutoChange(false, 'user');
+        }
         this.say(this.auto ? '' : 'タップでキャスト', '');
         this.bobber.visible = false;
         break;
@@ -336,6 +353,13 @@ export class FishingView {
         break;
       case 'empty':
         this.say('魚がいないようだ…', 'しばらくすると戻ってくる。別のスポットを探そう');
+        if (this.auto) {
+          // 自動釣りはここで終了（リザルト表示）
+          const reason = this.autoStopPending ? 'user' : 'empty';
+          this.autoStopPending = false;
+          this.setAuto(false);
+          this.cb.onAutoChange(false, reason);
+        }
         break;
     }
   }
@@ -455,6 +479,7 @@ export class FishingView {
       this.setPhase(this.cb.stock() > 0 ? 'idle' : 'empty');
     }, delay * 1000);
     this.phase = 'result';
+    this.el.dataset.phase = 'result';
     this.bobber.visible = false;
   }
 
@@ -592,14 +617,19 @@ export class FishingView {
     this.fightT += dt;
     const lineFactor = 22 / (22 + strength);
     if (this.reeling) {
-      // 巻くたびにヒット。パワーでダメージ、会心率で2倍
+      // 巻くたびにヒット。パワーでダメージ、会心率で2倍、連撃でヒット数が増える
       this.hitAcc += dt * HITS_PER_SEC;
       while (this.hitAcc >= 1) {
         this.hitAcc -= 1;
-        const crit = Math.random() * 100 < this.stats.crit;
-        const dmg = Math.max(1, Math.round(power * 10 * (0.85 + Math.random() * 0.3) * (crit ? 2 : 1) * (bursting ? 0.4 : 1)));
-        this.fishHp -= dmg;
-        this.spawnDamage(dmg, crit);
+        const m = this.stats.multiHit;
+        const lines = Math.min(MAX_LINES, 1 + Math.floor(m / 100) + (Math.random() * 100 < m % 100 ? 1 : 0));
+        if (lines > 1) this.dmgStack = 0; // 連撃は1回ごとに下から積み直す
+        for (let i = 0; i < lines; i++) {
+          const crit = Math.random() * 100 < this.stats.crit;
+          const dmg = Math.max(1, Math.round(power * 10 * (0.85 + Math.random() * 0.3) * (crit ? 2 : 1) * (bursting ? 0.4 : 1)));
+          this.fishHp -= dmg;
+          this.spawnDamage(dmg, crit, i * 45);
+        }
       }
       this.tension += (7 + s * 4) * lineFactor * (bursting ? 2.4 : 1) * dt;
     } else {
@@ -645,7 +675,7 @@ export class FishingView {
   }
 
   /** ダメージ数字を魚の上に積み上げて表示する */
-  private spawnDamage(value: number, crit: boolean) {
+  private spawnDamage(value: number, crit: boolean, delayMs = 0) {
     const p = (this.fishObj?.root.position ?? this.fishPos).clone();
     p.y += 0.5;
     p.project(this.camera);
@@ -661,9 +691,12 @@ export class FishingView {
     // 新しいヒットほど上に積む
     el.style.left = `${x}px`;
     el.style.top = `${Math.max(60, y - this.dmgStack * (crit ? 40 : 34))}px`;
-    this.dmgStack = (this.dmgStack + 1) % 10;
-    this.dmgLayer.appendChild(el);
-    setTimeout(() => el.remove(), 1300);
+    this.dmgStack = (this.dmgStack + 1) % MAX_LINES;
+    // 連撃は少しずつずらして出すと連打感が出る
+    setTimeout(() => {
+      this.dmgLayer.appendChild(el);
+      setTimeout(() => el.remove(), 1300);
+    }, delayMs);
     if (crit) this.splash(this.fishPos, 0.8);
   }
 
