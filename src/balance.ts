@@ -34,6 +34,11 @@ export function pullStrength(speciesStrength: number, sizeRatio: number, spotLev
   return speciesStrength * (0.7 + 0.6 * sizeRatio) * (1 + spotLevel * 0.03);
 }
 
+/** ファイトの制限時間（秒）。引きの強い魚ほど少し長い */
+export function fightTimeLimit(pull: number): number {
+  return Math.min(55, 35 + pull * 1.5);
+}
+
 /** 魚のHP。スポットLvで指数的に増える */
 export function fishMaxHp(speciesStrength: number, sizeRatio: number, spotLevel: number): number {
   const s = speciesStrength * (0.7 + 0.6 * sizeRatio) * (1 + spotLevel * 0.03);

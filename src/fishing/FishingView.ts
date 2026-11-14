@@ -4,8 +4,9 @@ import type { CaughtFish, Stats } from '../loot';
 import { isNight } from '../loot';
 import { BIOME_LABEL, FISH_BY_ID } from '../data/fish';
 import { createFish, FishMotion, FishObject, worldLength } from './fishModels';
-import { baseHitDamage, fishMaxHp, HITS_PER_SEC, pullStrength } from '../balance';
+import { baseHitDamage, fightTimeLimit, fishMaxHp, HITS_PER_SEC, pullStrength } from '../balance';
 import { buildScenery, type Scenery } from './scenery';
+import { FishingRod, type RodMode } from './rod';
 
 type Phase = 'idle' | 'casting' | 'waiting' | 'bite' | 'fight' | 'landing' | 'result' | 'empty';
 
@@ -30,7 +31,6 @@ const ROW_H = 30;
 /** 壁の上端（上のHUDに重ならない位置, px） */
 const WALL_TOP = 120;
 
-const ROD_TIP = new THREE.Vector3(0.45, 3.1, 2.4);
 
 export class FishingView {
   readonly el: HTMLElement;
@@ -42,7 +42,8 @@ export class FishingView {
   private waterBase: Float32Array;
   private bobber = new THREE.Group();
   private line: THREE.Line;
-  private rod: THREE.Mesh;
+  private rod: FishingRod;
+  private castFrom = new THREE.Vector3();
   private ripple: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
   private resizeObs: ResizeObserver;
   private scenery: Scenery;
@@ -67,6 +68,8 @@ export class FishingView {
   private fishMaxHp = 1;
   private hitAcc = 0;
   private fightT = 0;
+  private fightLimit = 40;
+  private timerEl!: HTMLElement;
   private dmgStack = 0;
   private lastHitT = -10;
   private spotLevel: number;
@@ -125,7 +128,7 @@ export class FishingView {
           <div class="fishing-sub"></div>
         </div>
         <div class="fishing-bars hidden">
-          <div class="bar-label">テンション</div>
+          <div class="bar-label tension-label"><span>テンション</span><span class="fight-timer"></span></div>
           <div class="bar tension"><div class="fill"></div><div class="danger"></div></div>
           <div class="bar-label hp-label"><span class="hp-name"></span><span class="hp-num"></span></div>
           <div class="bar hp"><div class="fill"></div></div>
@@ -140,6 +143,7 @@ export class FishingView {
     this.hpNum = this.el.querySelector('.hp-num')!;
     this.dmgLayer = this.el.querySelector('.dmg-layer')!;
     this.comboEl = this.el.querySelector('.combo')!;
+    this.timerEl = this.el.querySelector('.fight-timer')!;
     this.flashEl = this.el.querySelector('.hit-flash')!;
     this.autoBtn = this.el.querySelector('.btn-auto')!;
     this.autoBtn.addEventListener('click', (e) => {
@@ -215,16 +219,8 @@ export class FishingView {
     floor.position.set(0, -4, -90);
     this.scene.add(floor);
 
-    // ロッド
-    const rodBase = new THREE.Vector3(1.1, 1.0, 5.4);
-    const rodDir = ROD_TIP.clone().sub(rodBase);
-    this.rod = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.015, 0.045, rodDir.length(), 8),
-      new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.4, metalness: 0.5 }),
-    );
-    this.rod.position.copy(rodBase).addScaledVector(rodDir, 0.5);
-    this.rod.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), rodDir.clone().normalize());
-    this.scene.add(this.rod);
+    // 竿とリール
+    this.rod = new FishingRod(this.scene);
 
     // ウキ
     const top = new THREE.Mesh(new THREE.SphereGeometry(0.12, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0xff3b30, roughness: 0.4 }));
@@ -446,6 +442,7 @@ export class FishingView {
     this.fishHp = this.fishMaxHp;
     this.hitAcc = 0;
     this.fightT = 0;
+    this.fightLimit = fightTimeLimit(this.pull);
     this.dmgStack = 0;
     this.hpName.textContent = this.fish ? FISH_BY_ID[this.fish.speciesId].name : '';
     this.slackT = 0;
@@ -469,7 +466,13 @@ export class FishingView {
   }
 
   private escape(reason: string) {
-    this.say(reason === 'break' ? 'ラインが切れた！' : 'バレた…', reason === 'break' ? 'テンションに注意' : '緩めすぎると逃げられる');
+    const msg: Record<string, [string, string]> = {
+      break: ['ラインが切れた！', 'テンションに注意'],
+      slack: ['バレた…', '緩めすぎると逃げられる'],
+      timeout: ['時間切れ…逃げられた', '格上の魚は装備を強くして挑もう'],
+    };
+    const [main, sub] = msg[reason] ?? msg.slack;
+    this.say(main, sub);
     this.bars.classList.add('hidden');
     try { navigator.vibrate?.(300); } catch { /* noop */ }
     this.cb.onEscaped(reason);
@@ -490,9 +493,16 @@ export class FishingView {
 
     switch (this.phase) {
       case 'casting': {
-        const k = Math.min(1, this.phaseT / 0.8);
-        bobPos.lerpVectors(ROD_TIP, this.castTarget, k);
-        bobPos.y = THREE.MathUtils.lerp(ROD_TIP.y, 0, k) + Math.sin(k * Math.PI) * 3;
+        const k = Math.min(1, this.phaseT / 1.1);
+        // 竿を振り出したところ（castT≈0.45）から仕掛けが飛ぶ
+        if (k < 0.45) {
+          bobPos.copy(this.rod.tip);
+          this.castFrom.copy(this.rod.tip);
+        } else {
+          const f = (k - 0.45) / 0.55;
+          bobPos.lerpVectors(this.castFrom, this.castTarget, f);
+          bobPos.y = THREE.MathUtils.lerp(this.castFrom.y, 0, f) + Math.sin(f * Math.PI) * 3;
+        }
         if (k >= 1) {
           this.splash(this.castTarget);
           this.setPhase('waiting');
@@ -578,7 +588,7 @@ export class FishingView {
     this.shakeT = Math.max(0, this.shakeT - dt);
     const shake = (this.phase === 'fight' ? this.tension / 100 * (this.burstT > 0 ? 0.08 : 0.025) : 0) + this.shakeT * 0.6;
     this.camera.position.set((Math.random() - 0.5) * shake, 3.2 + (Math.random() - 0.5) * shake, 7.2);
-    this.rod.rotation.z = this.phase === 'fight' ? Math.sin(this.time * 20) * 0.01 * (this.tension / 50) : 0;
+    this.updateRod(dt);
 
     this.renderer.render(this.scene, this.camera);
   }
@@ -626,7 +636,7 @@ export class FishingView {
     } else {
       this.tension -= 34 * dt;
       // 緩めている間、魚は体力を回復する。長引くほど魚が疲れて回復しにくくなる（膠着しないように）
-      const stamina = Math.max(0.15, 1 - this.fightT / 60);
+      const stamina = Math.max(0.15, 1 - this.fightT / this.fightLimit);
       this.fishHp += this.fishMaxHp * Math.min(10, s) * 0.008 * (bursting ? 2.2 : 1) * stamina * dt;
     }
     this.tension = THREE.MathUtils.clamp(this.tension, 0, 100);
@@ -639,6 +649,9 @@ export class FishingView {
     this.tensionFill.parentElement!.classList.toggle('hot', this.tension > 80);
     this.hpFill.style.width = `${(this.fishHp / this.fishMaxHp) * 100}%`;
     this.hpNum.textContent = `${Math.ceil(this.fishHp).toLocaleString()} / ${this.fishMaxHp.toLocaleString()}`;
+    const left = Math.max(0, this.fightLimit - this.fightT);
+    this.timerEl.textContent = `⏱ ${left.toFixed(1)}`;
+    this.timerEl.classList.toggle('low', left <= 10);
 
     if (this.slackT > 2.5) this.say('ラインが緩んでいる！', '巻かないとバレる');
 
@@ -657,6 +670,7 @@ export class FishingView {
 
     if (this.tension >= 100) this.escape('break');
     else if (this.slackT > 4) this.escape('slack');
+    else if (this.fightT >= this.fightLimit && this.fishHp > 0) this.escape('timeout');
     else if (this.fishHp <= 0) {
       this.reeling = false;
       this.splash(this.fishPos, 1.5);
@@ -783,7 +797,7 @@ export class FishingView {
     const visible = toMouth || (this.bobber.visible && this.phase !== 'idle' && this.phase !== 'empty');
     this.line.visible = visible;
     if (!visible) return;
-    const a = ROD_TIP;
+    const a = this.rod.tip;
     const b = toMouth ? this.fishObj!.mouthWorld(this.mouthTmp) : this.bobber.position;
     const taut = this.phase === 'fight' ? this.tension / 100 : this.phase === 'casting' || this.phase === 'landing' ? 1 : 0.2;
     const sag = (1 - taut) * 0.8;
@@ -795,6 +809,23 @@ export class FishingView {
   }
 
   private mouthTmp = new THREE.Vector3();
+  private rodTarget = new THREE.Vector3();
+
+  /** 竿のしなり・リールの回転を、釣りの状態に合わせて更新する */
+  private updateRod(dt: number) {
+    const modes: Partial<Record<Phase, RodMode>> = { casting: 'cast', waiting: 'wait', bite: 'bite', fight: 'fight', landing: 'landing' };
+    const mode = modes[this.phase] ?? 'idle';
+    if ((mode === 'fight' || mode === 'landing') && this.fishObj) this.fishObj.mouthWorld(this.rodTarget);
+    else this.rodTarget.copy(this.bobber.position);
+    this.rod.update(dt, {
+      mode,
+      castT: Math.min(1, this.phaseT / 1.1),
+      tension: this.tension,
+      target: this.rodTarget,
+      reeling: this.reeling,
+      time: this.time,
+    });
+  }
   private rippleLife = 0;
   private splash(p: THREE.Vector3, size = 1) {
     this.ripple.position.set(p.x, 0.05, p.z);
