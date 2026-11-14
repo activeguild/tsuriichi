@@ -5,6 +5,7 @@ import { isNight } from '../loot';
 import { BIOME_LABEL, FISH_BY_ID } from '../data/fish';
 import { createFish, FishMotion, FishObject, worldLength } from './fishModels';
 import { baseHitDamage, fishMaxHp, HITS_PER_SEC, pullStrength } from '../balance';
+import { buildScenery, type Scenery } from './scenery';
 
 type Phase = 'idle' | 'casting' | 'waiting' | 'bite' | 'fight' | 'landing' | 'result' | 'empty';
 
@@ -29,13 +30,6 @@ const ROW_H = 30;
 /** 壁の上端（上のHUDに重ならない位置, px） */
 const WALL_TOP = 120;
 
-const ENV = {
-  river: { water: 0x3f8f8a, sky: 0x9fd3e8, ground: 0x6b8f3a },
-  lake: { water: 0x2f6f8f, sky: 0xa8d8f0, ground: 0x5f8a3a },
-  pond: { water: 0x4f7f4a, sky: 0xb8e0e8, ground: 0x7a8f3a },
-  sea: { water: 0x1f5f9f, sky: 0x8fd0f8, ground: 0xd8c08a },
-} as const;
-
 const ROD_TIP = new THREE.Vector3(0.45, 3.1, 2.4);
 
 export class FishingView {
@@ -44,13 +38,14 @@ export class FishingView {
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(55, 1, 0.1, 400);
   private timer = new THREE.Timer();
-  private water: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshStandardMaterial>;
+  private water: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshLambertMaterial>;
   private waterBase: Float32Array;
   private bobber = new THREE.Group();
   private line: THREE.Line;
   private rod: THREE.Mesh;
   private ripple: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
   private resizeObs: ResizeObserver;
+  private scenery: Scenery;
 
   private phase: Phase = 'idle';
   private phaseT = 0;
@@ -188,34 +183,22 @@ export class FishingView {
     hud.addEventListener('pointercancel', release);
     hud.addEventListener('pointerleave', release);
 
-    // 環境
+    // 景色（空・光・岸・遠景）
     const night = isNight();
-    const env = ENV[spot.biome];
-    const sky = new THREE.Color(night ? 0x0b1530 : env.sky);
-    this.scene.background = sky;
-    this.scene.fog = new THREE.Fog(sky, 25, 90);
-    const hemi = new THREE.HemisphereLight(night ? 0x5070b0 : 0xffffff, night ? 0x203040 : 0x445533, night ? 1.0 : 1.1);
-    this.scene.add(hemi);
-    const sun = new THREE.DirectionalLight(night ? 0x9fb8ff : 0xfff2dd, night ? 0.8 : 1.6);
-    sun.position.set(-5, 10, -6);
-    this.scene.add(sun);
-    // 正面からのフィルライト（釣り上げた魚の見栄え用）
-    const fill = new THREE.DirectionalLight(0xffffff, 0.9);
-    fill.position.set(1, 3, 8);
-    this.scene.add(fill);
+    this.scenery = buildScenery(this.scene, spot.biome, night);
+    const waterColor = this.scenery.waterColor;
 
-    // 水面
+    // 水面（空が映り込む）
     const wg = new THREE.PlaneGeometry(220, 220, 70, 70);
     wg.rotateX(-Math.PI / 2);
     this.waterBase = Float32Array.from(wg.attributes.position.array as Float32Array);
     this.water = new THREE.Mesh(
       wg,
-      new THREE.MeshStandardMaterial({
-        color: night ? new THREE.Color(env.water).multiplyScalar(0.45) : env.water,
-        roughness: 0.15,
-        metalness: 0.35,
+      // 照り返しは「きらめき」の粒で描くので、水面自体は鏡面反射なしの軽い材質にする
+      new THREE.MeshLambertMaterial({
+        color: waterColor,
         transparent: true,
-        opacity: 0.78,
+        opacity: 0.82,
         flatShading: true,
         depthWrite: false,
       }),
@@ -226,35 +209,11 @@ export class FishingView {
     // 水底（魚の背景を暗くして見やすく）
     const floor = new THREE.Mesh(
       new THREE.PlaneGeometry(220, 220),
-      new THREE.MeshBasicMaterial({ color: new THREE.Color(env.water).multiplyScalar(night ? 0.15 : 0.35) }),
+      new THREE.MeshBasicMaterial({ color: waterColor.clone().multiplyScalar(0.35) }),
     );
     floor.rotation.x = -Math.PI / 2;
     floor.position.set(0, -4, -90);
     this.scene.add(floor);
-
-    // 岸
-    const shore = new THREE.Mesh(
-      new THREE.BoxGeometry(60, 1, 12),
-      new THREE.MeshStandardMaterial({ color: night ? new THREE.Color(env.ground).multiplyScalar(0.4) : env.ground, roughness: 1 }),
-    );
-    shore.position.set(0, -0.35, 8.5);
-    this.scene.add(shore);
-
-    // 遠景
-    if (spot.biome !== 'sea') {
-      const hillMat = new THREE.MeshStandardMaterial({ color: night ? 0x1a2a2a : 0x4f7a4f, flatShading: true, roughness: 1 });
-      for (let i = 0; i < 14; i++) {
-        const h = 6 + Math.random() * 14;
-        const hill = new THREE.Mesh(new THREE.ConeGeometry(6 + Math.random() * 8, h, 6), hillMat);
-        hill.position.set(-70 + i * 11 + Math.random() * 4, h / 2 - 1, -75 - Math.random() * 10);
-        this.scene.add(hill);
-      }
-    }
-    if (night) {
-      const moon = new THREE.Mesh(new THREE.SphereGeometry(3, 16, 12), new THREE.MeshBasicMaterial({ color: 0xfff6d0, fog: false }));
-      moon.position.set(25, 30, -85);
-      this.scene.add(moon);
-    }
 
     // ロッド
     const rodBase = new THREE.Vector3(1.1, 1.0, 5.4);
@@ -306,6 +265,7 @@ export class FishingView {
   destroy() {
     this.renderer.setAnimationLoop(null);
     this.resizeObs.disconnect();
+    this.scenery.dispose();
     this.fishObj?.dispose();
     this.scene.traverse((o) => {
       const m = o as THREE.Mesh;
@@ -522,6 +482,7 @@ export class FishingView {
     this.time += dt;
     this.phaseT += dt;
     this.updateWater();
+    this.scenery.update(dt, this.time);
     this.updateAuto();
 
     const bobPos = this.bobber.position;

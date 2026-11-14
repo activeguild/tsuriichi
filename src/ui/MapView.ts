@@ -4,6 +4,7 @@ import { fishPool, isNight } from '../loot';
 import { computeStats, GameState, SPOT_MAX_STOCK, spotStock } from '../state';
 import { combatPower, recommendedPower } from '../balance';
 import { esc } from './common';
+import type { MapAutoStatus } from '../mapAuto';
 
 const BIOME_COLOR: Record<string, string> = {
   river: '#4fd1c5',
@@ -25,17 +26,27 @@ export class MapView {
   private visible = true;
   /** 1px あたりのメートル */
   private mpp = 1;
+  private autoEl!: HTMLElement;
+  private autoStatus: MapAutoStatus | null = null;
 
   constructor(
     private geo: GeoTracker,
     private getState: () => GameState,
     private onFish: (spot: Spot) => void,
+    private onAutoToggle: (on: boolean) => void,
   ) {
     this.el = document.createElement('div');
     this.el.className = 'map-view';
     this.el.innerHTML = `
       <canvas class="map-canvas"></canvas>
       <div class="map-status"></div>
+      <div class="map-auto">
+        <button class="map-auto-btn" aria-pressed="false">🎣 自動釣り</button>
+        <div class="map-auto-info hidden">
+          <div class="map-auto-row"><span class="map-auto-text"></span><span class="map-auto-time"></span></div>
+          <div class="map-auto-bar"><div class="fill"></div></div>
+        </div>
+      </div>
       <div class="sim-pad hidden">
         <button data-d="0,1">▲</button>
         <button data-d="-1,0">◀</button>
@@ -47,6 +58,10 @@ export class MapView {
     this.ctx = this.canvas.getContext('2d')!;
     this.info = this.el.querySelector('.spot-info')!;
     this.statusEl = this.el.querySelector('.map-status')!;
+    this.autoEl = this.el.querySelector('.map-auto')!;
+    this.autoEl.querySelector('.map-auto-btn')!.addEventListener('click', () => {
+      this.onAutoToggle(!(this.autoStatus?.on ?? false));
+    });
 
     this.canvas.addEventListener('click', (e) => this.onTap(e));
     this.el.querySelectorAll<HTMLButtonElement>('.sim-pad button').forEach((b) => {
@@ -75,6 +90,37 @@ export class MapView {
 
     this.geo.onUpdate(() => this.refreshSpots());
     this.loop();
+  }
+
+  /** 範囲内で魚が残っているスポット（近い順） */
+  fishableSpots(): Spot[] {
+    const pos = this.geo.pos;
+    if (!pos) return [];
+    if (!this.spotsCenter || distanceM(this.spotsCenter, pos) > 120) this.refreshSpots();
+    const state = this.getState();
+    return this.spots
+      .map((s) => ({ s, d: distanceM(pos, s) }))
+      .filter(({ s, d }) => d <= FISHING_RANGE_M && spotStock(state, s.id) > 0)
+      .sort((a, b) => a.d - b.d)
+      .map(({ s }) => s);
+  }
+
+  /** マップ自動釣りの状態を表示する */
+  setAutoStatus(st: MapAutoStatus) {
+    this.autoStatus = st;
+    const btn = this.autoEl.querySelector('.map-auto-btn') as HTMLButtonElement;
+    btn.classList.toggle('on', st.on);
+    btn.setAttribute('aria-pressed', String(st.on));
+    btn.textContent = st.on ? '🎣 自動釣り ON' : '🎣 自動釣り';
+    this.autoEl.classList.toggle('on', st.on);
+    this.autoEl.dataset.phase = st.phase;
+    this.autoEl.querySelector('.map-auto-info')!.classList.toggle('hidden', !st.on);
+    this.autoEl.querySelector('.map-auto-text')!.textContent = st.text;
+    const r = Math.ceil(st.remaining);
+    const timeEl = this.autoEl.querySelector('.map-auto-time')!;
+    timeEl.textContent = `⏱ ${Math.floor(r / 60)}:${String(r % 60).padStart(2, '0')}`;
+    timeEl.classList.toggle('low', r <= 60);
+    (this.autoEl.querySelector('.map-auto-bar .fill') as HTMLElement).style.width = `${st.progress * 100}%`;
   }
 
   setVisible(v: boolean) {
@@ -201,6 +247,26 @@ export class MapView {
       ctx.font = 'bold 11px sans-serif';
       ctx.fillStyle = myCp >= rec ? '#fff' : myCp >= rec * 0.6 ? '#ffd60a' : '#ff6b6b';
       ctx.fillText(`Lv${s.level}`, p.x, p.y + r + 10);
+    }
+
+    // マップ自動釣りで釣っているスポット
+    const active = this.autoStatus?.on && this.autoStatus.spotId ? this.spots.find((x) => x.id === this.autoStatus!.spotId) : null;
+    if (active) {
+      const p = this.toScreen(active, w, h);
+      const fighting = this.autoStatus!.phase === 'fight';
+      ctx.strokeStyle = fighting ? '#ff6a3d' : '#ffd60a';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 5]);
+      ctx.beginPath();
+      ctx.moveTo(w / 2, h / 2);
+      ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const pulse = 24 + Math.sin(t * (fighting ? 14 : 4)) * 4;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, pulse, 0, Math.PI * 2);
+      ctx.stroke();
     }
 
     // プレイヤー

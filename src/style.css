@@ -266,3 +266,18 @@ button { font: inherit; color: inherit; }
   80% { transform: translate(-50%, -54%) scale(1); opacity: 1; }
   100% { transform: translate(-50%, -62%) scale(.96); opacity: 0; }
 }
+
+/* マップ自動釣り */
+.map-auto { position: absolute; left: 16px; right: 16px; top: 46px; max-width: 480px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; pointer-events: none; }
+.map-auto > * { pointer-events: auto; }
+.map-auto-btn { background: rgba(0,0,0,.55); border: 2px solid rgba(255,255,255,.3); border-radius: 999px; padding: 6px 14px; font-size: 14px; font-weight: 800; }
+.map-auto-btn.on { background: linear-gradient(180deg, #ffcf3a, #ff8a00); border-color: #fff3c0; color: #4a1a00; box-shadow: 0 0 12px rgba(255,160,0,.7); }
+.map-auto-info { align-self: stretch; background: rgba(0,0,0,.6); border-radius: 12px; padding: 8px 12px; }
+.map-auto-row { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; font-weight: 700; }
+.map-auto-time { font-variant-numeric: tabular-nums; color: #ffd60a; white-space: nowrap; }
+.map-auto-time.low { color: #ff6b6b; animation: auto-pulse 1s ease-in-out infinite; }
+.map-auto-bar { height: 6px; background: rgba(255,255,255,.15); border-radius: 3px; overflow: hidden; margin-top: 6px; }
+.map-auto-bar .fill { height: 100%; width: 0; background: linear-gradient(90deg, #5fd3ff, #8affc1); transition: width .25s linear; }
+.map-auto[data-phase="fight"] .map-auto-bar .fill { background: linear-gradient(90deg, #ffb300, #ff4a2a); }
+.map-auto[data-phase="search"] .map-auto-text, .map-auto[data-phase="paused"] .map-auto-text { color: var(--muted); }
+.limit-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
