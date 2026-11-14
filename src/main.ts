@@ -2,10 +2,11 @@ import './style.css';
 import { FISH_BY_ID, FISH_RARITY_INFO } from './data/fish';
 import { ITEM_RARITY_INFO, Item, ItemRarity } from './data/gear';
 import { FishingView } from './fishing/FishingView';
-import { GeoTracker, Spot } from './geo';
+import { FISHING_RANGE_M, GeoTracker, Spot } from './geo';
 import { CaughtFish, rollFish, rollRewards, salvageValue } from './loot';
 import { Rng } from './rng';
 import { combatPower } from './balance';
+import { MapAutoFisher } from './mapAuto';
 import {
   addXp, computeStats, consumeSpot, GameState, INVENTORY_MAX, loadState, saveState, spotStock, xpToNext,
 } from './state';
@@ -48,7 +49,7 @@ renderHeader();
 
 const geo = new GeoTracker();
 const main = app.querySelector('.main')!;
-const mapView = new MapView(geo, getState, startFishing);
+const mapView = new MapView(geo, getState, startFishing, (on) => toggleMapAuto(on));
 const bagView = new BagView(getState, save);
 const zukanView = new ZukanView(getState);
 main.append(mapView.el, bagView.el, zukanView.el);
@@ -101,7 +102,10 @@ interface CatchRecord {
 
 /** 自動釣りセッション（AUTOをオンにしてからオフにするまで）の釣果 */
 interface AutoSession {
-  spot: Spot;
+  /** 釣り画面のAUTO か マップ自動釣り か */
+  kind: 'spot' | 'map';
+  /** 釣ったスポットの名前（マップ自動釣りは複数） */
+  places: Set<string>;
   startAt: number;
   startLevel: number;
   catches: CatchRecord[];
@@ -110,7 +114,11 @@ interface AutoSession {
 let autoSession: AutoSession | null = null;
 
 function startAutoSession(spot: Spot) {
-  autoSession = { spot, startAt: Date.now(), startLevel: state.level, catches: [], escapes: 0 };
+  autoSession = newSession('spot', spot);
+}
+
+function newSession(kind: AutoSession['kind'], spot?: Spot): AutoSession {
+  return { kind, places: new Set(spot ? [spot.name] : []), startAt: Date.now(), startLevel: state.level, catches: [], escapes: 0 };
 }
 
 /** セッションを終えて釣果リザルトを表示する */
@@ -122,8 +130,70 @@ async function endAutoSession(reason: 'user' | 'empty' | 'exit'): Promise<void> 
   await showSessionResult(ses, reason);
 }
 
+// ---- マップ自動釣り ----
+let mapSession: AutoSession | null = null;
+const mapAuto = new MapAutoFisher({
+  candidates: () => mapView.fishableSpots(),
+  stats: () => computeStats(state),
+  rollFish: (spot) => rollFish(spot, computeStats(state), rng),
+  onCatch: (spot, fish) => {
+    const rec = grantCatch(spot, fish);
+    mapSession?.catches.push(rec);
+    mapSession?.places.add(spot.name);
+    notifyCatch(rec);
+  },
+  onEscape: (spot, _fish, reason) => {
+    consumeSpot(state, spot.id);
+    if (mapSession) {
+      mapSession.escapes++;
+      mapSession.places.add(spot.name);
+    }
+    save();
+    toast(reason === 'left' ? '💨 釣り場を離れて逃げられた…' : '💨 逃げられた…');
+  },
+  onStatus: (st) => mapView.setAutoStatus(st),
+  onTimeUp: () => endMapSession('time'),
+});
+
+/** マップ自動釣りの制限時間（分） */
+const MAP_AUTO_LIMITS = [5, 15, 30];
+
+function toggleMapAuto(on: boolean) {
+  if (!on) {
+    mapAuto.stop();
+    endMapSession('user');
+    return;
+  }
+  // 制限時間を選んでから開始
+  const m = openModal(`
+    <div class="result">
+      <div class="sr-title">マップ自動釣り</div>
+      <div class="sr-sub">釣り場の範囲（${FISHING_RANGE_M}m）に入っている間、自動で釣りをします。<br>制限時間を選んでください</div>
+      <div class="limit-grid">${MAP_AUTO_LIMITS.map((n) => `<button class="btn btn-primary act-limit" data-min="${n}">${n}分</button>`).join('')}</div>
+      <div class="modal-actions"><button class="btn act-cancel">やめる</button></div>
+    </div>`);
+  m.el.querySelectorAll<HTMLButtonElement>('.act-limit').forEach((b) =>
+    b.addEventListener('click', () => {
+      m.close();
+      mapSession = newSession('map');
+      mapAuto.start(Number(b.dataset.min) * 60);
+      toast(`🎣 マップ自動釣り開始（${b.dataset.min}分）`);
+    }),
+  );
+  m.el.querySelector('.act-cancel')!.addEventListener('click', m.close);
+}
+
+function endMapSession(reason: 'user' | 'time') {
+  const ses = mapSession;
+  mapSession = null;
+  if (!ses) return;
+  if (ses.catches.length || ses.escapes) void showSessionResult(ses, reason);
+  else toast(reason === 'time' ? '⏱ 時間切れ（釣果なし）' : '自動釣りを終了しました');
+}
+
 function startFishing(spot: Spot) {
   if (fishing) return;
+  mapAuto.setPaused(true); // 3Dの釣り画面の間はマップ自動釣りを止める
   mapView.setVisible(false);
   app.classList.add('in-fishing');
   const auto = loadAuto();
@@ -147,6 +217,7 @@ function startFishing(spot: Spot) {
     onExit: () => {
       fishing?.destroy();
       fishing = null;
+      mapAuto.setPaused(false);
       app.classList.remove('in-fishing');
       showTab('map');
       void endAutoSession('exit');
@@ -194,6 +265,15 @@ function bestRarity(items: Item[]): ItemRarity | null {
   return items.reduce<ItemRarity | null>((acc, it) => (!acc || RARITY_RANK[it.rarity] < RARITY_RANK[acc] ? it.rarity : acc), null);
 }
 
+/** 自動釣りで釣れたときの通知 */
+function notifyCatch(rec: CatchRecord) {
+  const sp = FISH_BY_ID[rec.fish.speciesId];
+  const tags = `${rec.isNew ? ' NEW!' : ''}${rec.kept.length ? ` 🎁×${rec.kept.length}` : ''}`;
+  toast(`🎣 ${sp.name} ${rec.fish.size}cm${tags}`);
+  if (bestRarity(rec.kept) === 'legendary') setTimeout(() => toast(`🔥 ${ITEM_RARITY_INFO.legendary.label}ドロップ！`), 700);
+  if (rec.levelUps) setTimeout(() => toast(`LEVEL UP! → Lv${state.level}`), 1400);
+}
+
 async function onLanded(spot: Spot, fish: CaughtFish, auto: boolean): Promise<void> {
   const rec = grantCatch(spot, fish);
   const sp = FISH_BY_ID[fish.speciesId];
@@ -202,10 +282,7 @@ async function onLanded(spot: Spot, fish: CaughtFish, auto: boolean): Promise<vo
   if (auto && autoSession) {
     // 自動釣り中は1匹ごとの結果画面を出さず、まとめてリザルトで見せる
     autoSession.catches.push(rec);
-    const tags = `${rec.isNew ? ' NEW!' : ''}${rec.kept.length ? ` 🎁×${rec.kept.length}` : ''}`;
-    toast(`🎣 ${sp.name} ${fish.size}cm${tags}`);
-    if (best === 'legendary') setTimeout(() => toast(`🔥 ${ITEM_RARITY_INFO.legendary.label}ドロップ！`), 700);
-    if (rec.levelUps) setTimeout(() => toast(`LEVEL UP! → Lv${state.level}`), 1400);
+    notifyCatch(rec);
     await new Promise((r) => setTimeout(r, 1200));
     return;
   }
@@ -235,7 +312,7 @@ function fmtDuration(ms: number): string {
 }
 
 /** 自動釣りの釣果リザルト */
-async function showSessionResult(ses: AutoSession, reason: 'user' | 'empty' | 'exit'): Promise<void> {
+async function showSessionResult(ses: AutoSession, reason: 'user' | 'empty' | 'exit' | 'time'): Promise<void> {
   const cs = ses.catches;
   const xp = cs.reduce((a, c) => a + c.xp, 0);
   const coins = cs.reduce((a, c) => a + c.coins + c.autoSalvaged, 0);
@@ -280,13 +357,19 @@ async function showSessionResult(ses: AutoSession, reason: 'user' | 'empty' | 'e
     .map(([r, n]) => `<span class="sr-rc" style="color:${ITEM_RARITY_INFO[r].color}">${ITEM_RARITY_INFO[r].label} ${n}</span>`)
     .join('');
   const levelGain = state.level - ses.startLevel;
-  const endLabel = { user: 'AUTOを終了しました', empty: 'スポットの魚がいなくなりました', exit: '地図に戻りました' }[reason];
+  const endLabel = reason === 'time'
+    ? '制限時間になりました'
+    : ses.kind === 'map'
+      ? '自動釣りを終了しました'
+      : { user: 'AUTOを終了しました', empty: 'スポットの魚がいなくなりました', exit: '地図に戻りました' }[reason];
+  const places = [...ses.places];
+  const placeLabel = places.length <= 1 ? places[0] ?? '釣り場なし' : `${places[0]} ほか${places.length - 1}か所`;
   const best = bestRarity(items);
 
   const m = openModal(
     `<div class="result session-result">
-      <div class="sr-title">自動釣り 釣果リザルト</div>
-      <div class="sr-sub">${esc(ses.spot.name)}・${fmtDuration(Date.now() - ses.startAt)}・${endLabel}</div>
+      <div class="sr-title">${ses.kind === 'map' ? 'マップ自動釣り' : '自動釣り'} 釣果リザルト</div>
+      <div class="sr-sub">${esc(placeLabel)}・${fmtDuration(Date.now() - ses.startAt)}・${endLabel}</div>
       <div class="sr-stats">
         <div><b>${cs.length}</b><span>釣った数</span></div>
         <div><b>${ses.escapes}</b><span>逃した数</span></div>
