@@ -71,6 +71,8 @@ npm run dev
 | `src/data/fish.ts` / `src/data/gear.ts` | 魚種・装備・アフィックスのデータ |
 | `src/state.ts` | セーブ（localStorage）・ステータス計算 |
 | `src/fishing/FishingView.ts` | 3D釣りシーンとファイトのミニゲーム |
+| `src/fishing/scenery.ts` | 釣り画面の景色（空・雲・太陽/月・星・水面のきらめき・釣り場ごとの岸と遠景・カモメやホタル） |
+| `src/mapAuto.ts` | マップ自動釣り（範囲内で一定間隔に自動で釣る・制限時間） |
 | `src/fishing/fishModels.ts` | 魚モデル読み込み（GLB / Fish Kit / 手続き生成） |
 | `src/vendor/fish-kit/` | Fish Kit 本体（CC0） |
 | `src/ui/*` | 地図・装備・図鑑の画面 |
