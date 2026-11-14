@@ -4,7 +4,7 @@
  * 3Dの釣り画面は開かず、アタリ待ち → ファイト（戦闘力と魚のHPで所要時間と成功率を決める）→ 結果 をくり返す。
  */
 import { FISH_BY_ID } from './data/fish';
-import { combatPower, fishMaxHp } from './balance';
+import { combatPower, fightTimeLimit, fishMaxHp, pullStrength } from './balance';
 import type { Spot } from './geo';
 import type { CaughtFish, Stats } from './loot';
 
@@ -174,11 +174,18 @@ export class MapAutoFisher {
     const hp = fishMaxHp(sp.strength, fish.sizeRatio, spot.level);
     const cp = Math.max(1, combatPower(this.deps.stats()));
     const reelSec = hp / cp; // 巻き続けたときに倒すまでの秒数
-    const p = Math.max(0.1, Math.min(0.97, 1.05 - reelSec / 40));
-    this.success = Math.random() < p;
-    const fightSec = Math.max(3, Math.min(45, reelSec / REEL_SHARE));
-    // 失敗はファイトの途中でバレる
-    this.dur = this.success ? fightSec : fightSec * (0.3 + Math.random() * 0.6);
+    const limit = fightTimeLimit(pullStrength(sp.strength, fish.sizeRatio, spot.level));
+    const fightSec = Math.max(3, reelSec / REEL_SHARE);
+    if (fightSec > limit) {
+      // 制限時間内に倒せない魚は、時間切れで逃げられる
+      this.success = false;
+      this.dur = limit;
+    } else {
+      const p = Math.max(0.1, Math.min(0.97, 1.05 - reelSec / 40));
+      this.success = Math.random() < p;
+      // 失敗はファイトの途中でバレる
+      this.dur = this.success ? fightSec : fightSec * (0.3 + Math.random() * 0.6);
+    }
     this.t = 0;
     this.phase = 'fight';
     this.emit(`ファイト中！ ${sp.name}`, 0);

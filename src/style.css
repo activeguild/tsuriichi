@@ -281,3 +281,8 @@ button { font: inherit; color: inherit; }
 .map-auto[data-phase="fight"] .map-auto-bar .fill { background: linear-gradient(90deg, #ffb300, #ff4a2a); }
 .map-auto[data-phase="search"] .map-auto-text, .map-auto[data-phase="paused"] .map-auto-text { color: var(--muted); }
 .limit-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+
+/* ファイトの残り時間 */
+.tension-label { display: flex; justify-content: space-between; }
+.fight-timer { font-weight: 800; font-variant-numeric: tabular-nums; color: #ffe27a; font-size: 13px; }
+.fight-timer.low { color: #ff5a5f; animation: auto-pulse .6s ease-in-out infinite; }
