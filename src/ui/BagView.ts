@@ -1,5 +1,6 @@
 import { ITEM_RARITY_INFO, Item, ItemRarity, SLOTS, SLOT_LABEL, STAT_INFO, StatKey } from '../data/gear';
 import { salvageValue } from '../loot';
+import { combatPower } from '../balance';
 import { computeStats, GameState, INVENTORY_MAX, itemStats } from '../state';
 import { esc, itemCardHTML, openModal, toast } from './common';
 
@@ -32,7 +33,7 @@ export class BagView {
       .join('');
     const inv = [...s.inventory].sort((a, b) => RARITY_RANK[a.rarity] - RARITY_RANK[b.rarity] || b.ilvl - a.ilvl);
     this.el.innerHTML = `
-      <h2>装備</h2>
+      <h2>装備 <span class="cp-badge">⚔ 戦闘力 ${combatPower(stats).toLocaleString()}</span></h2>
       <div class="eq-grid">${equipped}</div>
       <details class="stats"><summary>ステータス</summary><div class="stat-grid">${statRows}</div></details>
       <div class="inv-head">
@@ -67,6 +68,10 @@ export class BagView {
     const s = this.getState();
     const cur = s.equipped[item.slot];
     let compare = '';
+    // 装備したときの戦闘力の変化
+    const cpNow = combatPower(computeStats(s));
+    const cpWith = combatPower(computeStats({ ...s, equipped: { ...s.equipped, [item.slot]: item } }));
+    const cpDiff = cpWith - cpNow;
     if (!isEquipped) {
       const a = itemStats(item);
       const b = cur ? itemStats(cur) : {};
@@ -78,7 +83,8 @@ export class BagView {
           return `<div class="diff ${d > 0 ? 'up' : 'down'}">${STAT_INFO[k].label} ${d > 0 ? '+' : ''}${d}${STAT_INFO[k].unit}</div>`;
         })
         .join('');
-      compare = `<div class="compare"><div class="compare-title">装備中と比較${cur ? '' : '（なし）'}</div>${compare || '<div class="diff">変化なし</div>'}</div>`;
+      const cpLine = `<div class="cp-diff ${cpDiff > 0 ? 'up' : cpDiff < 0 ? 'down' : ''}">⚔ 戦闘力 ${cpNow.toLocaleString()} → ${cpWith.toLocaleString()} ${cpDiff > 0 ? `▲${cpDiff.toLocaleString()}` : cpDiff < 0 ? `▼${(-cpDiff).toLocaleString()}` : ''}</div>`;
+      compare = `<div class="compare">${cpLine}<div class="compare-title">装備中と比較${cur ? '' : '（なし）'}</div>${compare || '<div class="diff">変化なし</div>'}</div>`;
     }
     const m = openModal(`
       ${itemCardHTML(item)}
@@ -95,7 +101,7 @@ export class BagView {
       s.equipped[item.slot] = item;
       this.save();
       m.close();
-      toast(`${item.name} を装備した`);
+      toast(cpDiff > 0 ? `⚔ 戦闘力 ${cpNow.toLocaleString()} → ${cpWith.toLocaleString()} ▲${cpDiff.toLocaleString()}` : `${item.name} を装備した`);
       this.render();
     });
     m.el.querySelector('.act-unequip')?.addEventListener('click', () => {
