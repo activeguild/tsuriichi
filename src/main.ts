@@ -8,7 +8,7 @@ import { Rng } from './rng';
 import { combatPower } from './balance';
 import { MapAutoFisher } from './mapAuto';
 import {
-  addXp, computeStats, consumeSpot, GameState, INVENTORY_MAX, loadState, saveState, spotStock, xpToNext,
+  addXp, computeStats, consumeSpot, GameState, INVENTORY_MAX, loadState, saveState, spotStock, stashItems, xpToNext,
 } from './state';
 import { BagView } from './ui/BagView';
 import { esc, itemCardHTML, openModal, toast } from './ui/common';
@@ -35,7 +35,7 @@ app.innerHTML = `
   <main class="main"></main>
   <nav class="tabs">
     <button data-tab="map" class="active">🗺️<span>地図</span></button>
-    <button data-tab="bag">🎒<span>装備</span></button>
+    <button data-tab="bag">🎒<span>バッグ</span></button>
     <button data-tab="zukan">📖<span>図鑑</span></button>
   </nav>`;
 
@@ -247,7 +247,7 @@ function grantCatch(spot: Spot, fish: CaughtFish): CatchRecord {
   const kept: Item[] = [];
   let autoSalvaged = 0;
   for (const it of reward.items) {
-    if (state.inventory.length < INVENTORY_MAX) {
+    if (stashItems(state).length < INVENTORY_MAX) {
       state.inventory.push(it);
       kept.push(it);
     } else {
